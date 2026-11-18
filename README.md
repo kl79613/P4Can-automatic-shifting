@@ -130,6 +130,12 @@ Windows 可使用 MSYS2、WSL，或用任意 C++17 编译器编译 `tests/*.cpp`
 
 MIT License，见 [LICENSE](LICENSE)。发布前请确认你拥有所有拟发布代码的权利；如需其他许可证，请先替换本文件。
 
+## 支持作者
+
+欢迎请作者喝杯咖啡，助力后续更新～
+
+<img src="docs/alipay-qr.jpg" alt="支付宝收款码" width="360">
+
 ---
 
 # English
