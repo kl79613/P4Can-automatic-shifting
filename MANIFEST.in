@@ -1,0 +1,7 @@
+src/                         Portable decision, safety, encoder, and observer core.
+firmware-reference/          Original P4CAN integration/API excerpts; expects parent firmware symbols.
+tests/                       Host-only regression tests for the portable core.
+tools/run-host-tests.sh      Runs the host tests with a C++17 compiler.
+docs/                        Original Chinese design and UI notes.
+README.md                    Bilingual open-source README.
+LICENSE                      MIT license text.

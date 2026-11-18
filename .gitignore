@@ -1,0 +1,11 @@
+.DS_Store
+__pycache__/
+*.o
+*.obj
+*.bin
+*.elf
+*.map
+build/
+Output/
+output/
+.tmp/
