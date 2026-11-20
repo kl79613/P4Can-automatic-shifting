@@ -136,14 +136,15 @@ int main(){
    auto r=manual.update(f.o.inputs(0,f.now),f.now,c,1,true,true);CHECK(!r.ready);
    f.brake=0xCF;f.wheel=700;f.step();r=manual.update(f.o.inputs(0,f.now),f.now,c,1,false,true);
    CHECK(r.ready&&r.candidate==Candidate::Forward&&r.wheelDeltaDeci==-600);++checks;}
-  // When drAbsoluteSteering is enabled, absolute steering angle >= threshold triggers immediately on the pedal edge.
-  {Fixture f;f.gear=4;f.brake=0xCF;f.front[0]=500;f.rear[0]=500;Config c;c.steeringFallback=true;c.drAbsoluteSteering=true;c.drAbsoluteConfirmDeg=50;
-   BrakeSteeringTracker manual;f.wheel=-400;f.step();
+  // D/R requires relative motion after brake edge; large wheel angle on edge captures baseline and does not trigger.
+  {Fixture f;f.gear=4;f.brake=0xCF;f.front[0]=500;f.rear[0]=500;Config c;c.steeringFallback=true;c.drConfirmDeg=50;
+   BrakeSteeringTracker manual;f.wheel=-550;f.step();
    auto r=manual.update(f.o.inputs(0,f.now),f.now,c,1,true,true);
-   CHECK(!r.ready);
-   BrakeSteeringTracker manual2;f.wheel=-550;f.step();
-   r=manual2.update(f.o.inputs(0,f.now),f.now,c,1,true,true);
-   CHECK(r.ready&&r.candidate==Candidate::Reverse);++checks;}
+   CHECK(!r.ready&&r.baselineWheelDeci==-550&&r.wheelDeltaDeci==0);
+   f.wheel=-550;f.step();r=manual.update(f.o.inputs(0,f.now),f.now,c,1,false,true);
+   CHECK(!r.ready&&r.wheelDeltaDeci==0);
+   f.wheel=-1060;f.step();r=manual.update(f.o.inputs(0,f.now),f.now,c,1,false,true);
+   CHECK(r.ready&&r.candidate==Candidate::Reverse&&r.wheelDeltaDeci==-510);++checks;}
   // One pedal epoch consumes one manual trigger. Holding or reversing the wheel
   // cannot create a second request; a new edge takes a new baseline.
   {Fixture f;f.gear=4;f.brake=0xCF;f.front[0]=500;f.rear[0]=500;Config c;c.steeringFallback=true;

@@ -175,13 +175,13 @@ int main() {
   }
   // All previous persisted record sizes migrate with safe new-field defaults.
   {Config old=active229();old.steeringFallback=true;old.parkSteeringFallback=true;old.hardCutSpeedKph=12;
-    old.parkSideThresholdCm=45;old.parkRearDeltaCm=220;old.drAbsoluteConfirmDeg=42;
-    uint8_t bytes[28];serializeConfig(old,bytes);Config loaded;
-    assert(deserializeConfig(bytes,28,loaded)&&loaded.hardCutSpeedKph==12&&loaded.parkSteeringFallback&&loaded.parkSideThresholdCm==45&&loaded.parkRearDeltaCm==220&&loaded.drAbsoluteConfirmDeg==42);++checks;
+    old.parkSideThresholdCm=45;old.parkRearDeltaCm=220;
+    uint8_t bytes[26];serializeConfig(old,bytes);Config loaded;
+    assert(deserializeConfig(bytes,26,loaded)&&loaded.hardCutSpeedKph==12&&loaded.parkSteeringFallback&&loaded.parkSideThresholdCm==45&&loaded.parkRearDeltaCm==220);++checks;
     assert(loaded.enabled);++checks;
-    uint8_t bytes26[26]={};
-    memcpy(bytes26,bytes,24);bytes26[0]=3;bytes26[24]=0;bytes26[25]=0;
-    assert(deserializeConfig(bytes26,26,loaded)&&loaded.drAbsoluteConfirmDeg==loaded.driveReverseConfirmDeg);++checks;
+    uint8_t bytes28[28]={};
+    memcpy(bytes28,bytes,26);bytes28[0]=4;bytes28[26]=0;bytes28[27]=0;
+    assert(deserializeConfig(bytes28,28,loaded)&&loaded.parkSideThresholdCm==45&&loaded.parkRearDeltaCm==220);++checks;
     uint8_t bytes22[22]={};
     memcpy(bytes22,bytes,20);bytes22[0]=2;bytes22[20]=bytes22[21]=0;
     assert(deserializeConfig(bytes22,22,loaded)&&loaded.parkSideThresholdCm==30&&loaded.parkRearDeltaCm==180);++checks;
@@ -193,16 +193,13 @@ int main() {
     bytes[15]=0;
     assert(deserializeConfig(bytes,16,loaded)&&loaded.obstacleThresholdCm==60);++checks;
     for(size_t size=0;size<16;++size){assert(!deserializeConfig(bytes,size,loaded));++checks;}
-    serializeConfig(old,bytes);bytes[18]=7;assert(!deserializeConfig(bytes,28,loaded));++checks;
-    serializeConfig(old,bytes);bytes[19]=2;assert(!deserializeConfig(bytes,28,loaded));++checks;
-    serializeConfig(old,bytes);bytes[24]=2;assert(!deserializeConfig(bytes,28,loaded));++checks;
-    old.drAbsoluteSteering=true;serializeConfig(old,bytes);
-    assert(deserializeConfig(bytes,28,loaded)&&loaded.drAbsoluteSteering);++checks;
-    old.drAbsoluteSteering=false;
-    serializeConfig(old,bytes);bytes[5]=3;assert(!deserializeConfig(bytes,28,loaded));++checks;
-    assert(!deserializeConfig(nullptr,28,loaded));++checks;
+    serializeConfig(old,bytes);bytes[18]=7;assert(!deserializeConfig(bytes,26,loaded));++checks;
+    serializeConfig(old,bytes);bytes[19]=2;assert(!deserializeConfig(bytes,26,loaded));++checks;
+    serializeConfig(old,bytes);bytes[24]=1;assert(!deserializeConfig(bytes,26,loaded));++checks;
+    serializeConfig(old,bytes);bytes[5]=3;assert(!deserializeConfig(bytes,26,loaded));++checks;
+    assert(!deserializeConfig(nullptr,26,loaded));++checks;
     serializeConfig(old,bytes);bytes[0]=1;
-    assert(deserializeConfig(bytes,28,loaded)&&!loaded.enabled&&loaded.parkSteeringFallback);++checks;
+    assert(deserializeConfig(bytes,26,loaded)&&!loaded.enabled&&loaded.parkSteeringFallback);++checks;
     serializeConfig(old,bytes);assert(!deserializeConfig(bytes,20,loaded));++checks;
   }
   // Park-gear pulse bursts retry at 20ms intervals with advancing rolling counter and checksum;

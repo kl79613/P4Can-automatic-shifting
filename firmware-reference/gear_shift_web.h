@@ -73,10 +73,9 @@ static String gearShiftStatusToJson() {
   if(txMs) j.u32("lastTxAgeMs",now-txMs); else j.raw("lastTxAgeMs","null");
   j.beginObject("config");
   j.boolean("requireSeatbelt",cfg.requireSeatbelt); j.boolean("requireSteering",cfg.requireSteering); j.boolean("steeringFallback",cfg.steeringFallback); j.boolean("parkSteeringFallback",cfg.parkSteeringFallback);
-  j.boolean("drAbsoluteSteering",cfg.drAbsoluteSteering);
   j.u32("maxSpeedKph",cfg.maxSpeedKph); j.u32("hardCutSpeedKph",cfg.hardCutSpeedKph); j.u32("speedBus",cfg.speedBus);
   j.u32("cooldownMs",cfg.cooldownMs); j.u32("parkConfirmDeg",cfg.parkConfirmDeg);
-  j.u32("driveReverseConfirmDeg",cfg.driveReverseConfirmDeg); j.u32("drAbsoluteConfirmDeg",cfg.drAbsoluteConfirmDeg); j.u32("obstacleConfirmDeg",cfg.obstacleConfirmDeg);
+  j.u32("driveReverseConfirmDeg",cfg.driveReverseConfirmDeg); j.u32("obstacleConfirmDeg",cfg.obstacleConfirmDeg);
   j.u32("obstacleThresholdCm",cfg.obstacleThresholdCm);
   j.u32("parkSideThresholdCm",cfg.parkSideThresholdCm);
   j.u32("parkRearDeltaCm",cfg.parkRearDeltaCm);
@@ -153,14 +152,13 @@ static void httpGearShiftConfig() {
     changed=true;
   }
   struct Numeric { const char *name; uint32_t lo,hi; uint32_t *value; };
-  uint32_t speed=next.speedBus,belt=next.requireSeatbelt?1:0,steer=next.requireSteering?1:0,steerFallback=next.steeringFallback?1:0,parkSteer=next.parkSteeringFallback?1:0,drAbsolute=next.drAbsoluteSteering?1:0;
-  uint16_t drDegVal = next.driveReverseConfirmDeg;
+  uint32_t speed=next.speedBus,belt=next.requireSeatbelt?1:0,steer=next.requireSteering?1:0,steerFallback=next.steeringFallback?1:0,parkSteer=next.parkSteeringFallback?1:0;
   uint32_t maxKph=next.maxSpeedKph,hardCut=next.hardCutSpeedKph,cooldown=next.cooldownMs,pDeg=next.parkConfirmDeg,
-      drDeg=drDegVal,drAbsoluteDeg=next.drAbsoluteConfirmDeg,obstacle=next.obstacleConfirmDeg,obstacleCm=next.obstacleThresholdCm,
+      drDeg=next.driveReverseConfirmDeg,obstacle=next.obstacleConfirmDeg,obstacleCm=next.obstacleThresholdCm,
       parkSide=next.parkSideThresholdCm,parkRear=next.parkRearDeltaCm;
   Numeric fields[]={{"speedBus",0,2,&speed},{"requireSeatbelt",0,1,&belt},
-      {"requireSteering",0,1,&steer},{"steeringFallback",0,1,&steerFallback},{"parkSteeringFallback",0,1,&parkSteer},{"drAbsoluteSteering",0,1,&drAbsolute},{"maxKph",0,8,&maxKph},{"hardCutKph",1,30,&hardCut},{"cooldownMs",0,10000,&cooldown},
-      {"pDeg",1,720,&pDeg},{"drDeg",1,720,&drDeg},{"drAbsoluteDeg",1,720,&drAbsoluteDeg},{"drAbsoluteConfirmDeg",1,720,&drAbsoluteDeg},{"obstacleDeg",1,720,&obstacle},
+      {"requireSteering",0,1,&steer},{"steeringFallback",0,1,&steerFallback},{"parkSteeringFallback",0,1,&parkSteer},{"maxKph",0,8,&maxKph},{"hardCutKph",1,30,&hardCut},{"cooldownMs",0,10000,&cooldown},
+      {"pDeg",1,720,&pDeg},{"drDeg",1,720,&drDeg},{"obstacleDeg",1,720,&obstacle},
       {"obstacleCm",1,499,&obstacleCm},{"parkSideThresholdCm",10,200,&parkSide},
       {"parkRearDeltaCm",50,450,&parkRear}};
   for(auto &field:fields) if(server.hasArg(field.name)) {
@@ -171,7 +169,6 @@ static void httpGearShiftConfig() {
   if(!changed) {server.send(400,"application/json","{\"ok\":false,\"error\":\"missing settings\"}");return;}
   next.speedBus=static_cast<uint8_t>(speed); next.requireSeatbelt=belt!=0;
   next.requireSteering=steer!=0; next.steeringFallback=steerFallback!=0; next.parkSteeringFallback=parkSteer!=0;
-  next.drAbsoluteSteering=drAbsolute!=0; next.drAbsoluteConfirmDeg=static_cast<uint16_t>(drAbsoluteDeg);
   next.maxSpeedKph=static_cast<uint8_t>(maxKph); next.hardCutSpeedKph=static_cast<uint8_t>(hardCut);
   next.cooldownMs=static_cast<uint16_t>(cooldown); next.parkConfirmDeg=static_cast<uint16_t>(pDeg);
   next.driveReverseConfirmDeg=static_cast<uint16_t>(drDeg); next.obstacleConfirmDeg=static_cast<uint16_t>(obstacle);

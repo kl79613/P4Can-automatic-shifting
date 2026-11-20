@@ -22,8 +22,6 @@ struct Config {
   uint16_t obstacleThresholdCm=60;
   uint16_t parkSideThresholdCm=30;
   uint16_t parkRearDeltaCm=180;
-  bool drAbsoluteSteering=false;
-  uint16_t drAbsoluteConfirmDeg=30;
 };
 constexpr uint16_t kSignalIds[SignalCount] = {0x118,0x145,0x20E,0x22E,0x257,0x129,0x102,0x103,0x3C2};
 inline const char *signalName(uint8_t s) {
@@ -352,11 +350,7 @@ class BrakeSteeringTracker {
     if(!baselineValid_) {
       baselineValid_=true; baseline_=in.wheelAngleDeci; since_=now;
       out.baselineWheelDeci=baseline_; out.wheelDeltaDeci=0;
-      const int absWheelInit=in.wheelAngleDeci<0?-in.wheelAngleDeci:in.wheelAngleDeci;
-      const int absThresholdInit=10*int(in.gear==1?c.pConfirmDeg:c.drAbsoluteConfirmDeg);
-      if (!(c.drAbsoluteSteering && in.gear!=1 && absWheelInit>=absThresholdInit)) {
-        out.reason=Reason::WaitWheel; return out;
-      }
+      out.reason=Reason::WaitWheel; return out;
     }
     out.baselineWheelDeci=baseline_;
     out.wheelDeltaDeci=in.wheelAngleDeci-baseline_;
@@ -366,9 +360,7 @@ class BrakeSteeringTracker {
     const int magnitude=out.wheelDeltaDeci<0?-out.wheelDeltaDeci:out.wheelDeltaDeci;
     const int absWheel=in.wheelAngleDeci<0?-in.wheelAngleDeci:in.wheelAngleDeci;
     const int threshold=10*int(in.gear==1?c.pConfirmDeg:c.drConfirmDeg);
-    const int absThreshold=10*int(in.gear==1?c.pConfirmDeg:c.drAbsoluteConfirmDeg);
-    const bool allowAbsolute = (in.gear == 1) || c.drAbsoluteSteering;
-    const bool triggered = magnitude >= threshold || (allowAbsolute && absWheel >= absThreshold);
+    const bool triggered = (in.gear==1) ? (magnitude >= threshold || absWheel >= threshold) : (magnitude >= threshold);
     if(!triggered) {out.reason=Reason::WaitWheel; return out;}
     if(in.gear==1&&!c.parkSteeringCalibrated) {
       used_=true; out.reason=Reason::SteeringCalibrationRequired; return out;
@@ -437,18 +429,13 @@ class RadarSteeringTracker {
     if(!baselineValid_) {
       baselineValid_=true; baseline_=in.wheelAngleDeci; since_=now;
       out.baselineWheelDeci=baseline_; out.wheelDeltaDeci=0;
-      const int absWheelInit=in.wheelAngleDeci<0?-in.wheelAngleDeci:in.wheelAngleDeci;
-      const int thresholdInit=10*int(c.obstacleDeg);
-      if (!(c.drAbsoluteSteering && in.gear!=1 && absWheelInit>=thresholdInit)) {
-        out.reason=Reason::WaitWheel; return out;
-      }
+      out.reason=Reason::WaitWheel; return out;
     }
     out.baselineWheelDeci=baseline_;
     out.wheelDeltaDeci=in.wheelAngleDeci-baseline_;
     const int magnitude=out.wheelDeltaDeci<0?-out.wheelDeltaDeci:out.wheelDeltaDeci;
-    const int absWheel=in.wheelAngleDeci<0?-in.wheelAngleDeci:in.wheelAngleDeci;
     const int threshold=10*int(c.obstacleDeg);
-    const bool triggered = magnitude >= threshold || (c.drAbsoluteSteering && absWheel >= threshold);
+    const bool triggered = magnitude >= threshold;
     if(!triggered) {out.reason=Reason::WaitWheel; return out;}
     used_=true; out.ready=true; out.reason=Reason::CandidateReady;
     out.candidate=candidate_; out.source=CandidateSource::Radar;

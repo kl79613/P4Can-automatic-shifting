@@ -247,21 +247,19 @@ static void httpGearHintV12RawStatus() {
 // A GET computes only a display projection. Query options never mutate device
 // settings, RX state, confirmation counters, NVS or any original feature.
 static void httpGearHintV12DecisionStatus() {
-  uint32_t aux=0,belt=1,maxKph=8,hardCut=10,turn=0,steerFallback=0,parkSteer=0,drAbsolute=0,cooldown=1000,pDeg=30,drDeg=60,drAbsoluteDeg=30,obstacleDeg=30,obstacleCm=100;
+  uint32_t aux=0,belt=1,maxKph=8,hardCut=10,turn=0,steerFallback=0,parkSteer=0,cooldown=1000,pDeg=30,drDeg=60,obstacleDeg=30,obstacleCm=100;
   const auto option=[](const char *key,uint32_t &value,uint32_t lo,uint32_t hi) {
     return !server.hasArg(key)||(gearHintV12QueryU32(key,value)&&value>=lo&&value<=hi);
   };
   if(!option("auxBus",aux,0,2)||!option("requireSeatbelt",belt,0,1)||!option("maxKph",maxKph,0,8)||
       !option("hardCutKph",hardCut,1,30)||hardCut<maxKph||!option("turnConfirm",turn,0,1)||!option("steeringFallback",steerFallback,0,1)||!option("parkSteeringFallback",parkSteer,0,1)||
-      !option("drAbsoluteSteering",drAbsolute,0,1)||
       !option("cooldownMs",cooldown,0,10000)||
-      !option("pDeg",pDeg,1,720)||!option("drDeg",drDeg,1,720)||!option("drAbsoluteDeg",drAbsoluteDeg,1,720)||!option("obstacleDeg",obstacleDeg,1,720)||
+      !option("pDeg",pDeg,1,720)||!option("drDeg",drDeg,1,720)||!option("obstacleDeg",obstacleDeg,1,720)||
       !option("obstacleCm",obstacleCm,1,499)) {
     server.send(400,"application/json","{\"ok\":false,\"reason\":\"INVALID_DISPLAY_OPTIONS\"}");return;
   }
   gearhintv12live::Config config;
   config.requireSeatbelt=belt!=0;config.maxSpeedKph=static_cast<uint8_t>(maxKph);config.hardCutSpeedKph=static_cast<uint8_t>(hardCut);config.requireSteering=turn!=0;config.steeringFallback=steerFallback!=0;config.parkSteeringFallback=parkSteer!=0;
-  config.drAbsoluteSteering=drAbsolute!=0;config.drAbsoluteConfirmDeg=drAbsoluteDeg;
   config.cooldownMs=cooldown;config.pConfirmDeg=pDeg;config.drConfirmDeg=drDeg;config.obstacleDeg=obstacleDeg;
   config.obstacleThresholdCm=static_cast<uint16_t>(obstacleCm);
   const bool supported=activeCanAIsBody()&&activeCanBIsChassis();
@@ -292,8 +290,6 @@ static void httpGearHintV12DecisionStatus() {
   const bool prearmApplied=(saved.protocol!=gearshift::Protocol::V13V14)&&saved.speedBus==aux&&
       saved.requireSeatbelt==config.requireSeatbelt&&saved.requireSteering==config.requireSteering&&
       saved.steeringFallback==config.steeringFallback&&saved.parkSteeringFallback==config.parkSteeringFallback&&
-      saved.drAbsoluteSteering==config.drAbsoluteSteering&&
-      saved.drAbsoluteConfirmDeg==drAbsoluteDeg&&
       saved.maxSpeedKph==maxKph&&saved.hardCutSpeedKph==hardCut&&saved.cooldownMs==cooldown&&
       saved.parkConfirmDeg==pDeg&&saved.driveReverseConfirmDeg==drDeg&&
       saved.obstacleConfirmDeg==obstacleDeg&&saved.obstacleThresholdCm==obstacleCm;
@@ -315,8 +311,8 @@ static void httpGearHintV12DecisionStatus() {
   j.boolean("steeringRequired",config.requireSteering);j.boolean("occupancyRequired",false);
   j.beginObject("config");j.boolean("requireSeatbelt",config.requireSeatbelt);j.u32("maxKph",maxKph);j.u32("hardCutKph",hardCut);
   j.boolean("turnConfirm",config.requireSteering);j.boolean("steeringFallback",config.steeringFallback);j.boolean("parkSteeringFallback",config.parkSteeringFallback);
-  j.boolean("drAbsoluteSteering",config.drAbsoluteSteering);j.u32("cooldownMs",cooldown);
-  j.u32("pDeg",pDeg);j.u32("drDeg",drDeg);j.u32("drAbsoluteDeg",drAbsoluteDeg);j.u32("obstacleDeg",obstacleDeg);j.u32("obstacleCm",obstacleCm);j.endObject();
+  j.u32("cooldownMs",cooldown);
+  j.u32("pDeg",pDeg);j.u32("drDeg",drDeg);j.u32("obstacleDeg",obstacleDeg);j.u32("obstacleCm",obstacleCm);j.endObject();
   j.u32("nowMs",now);j.u32("freshnessMs",gearhintv12live::kFreshMs);
   j.string("candidate",gearhintv12live::candidateName(result.candidate));
   j.string("reason",gearhintv12live::reasonName(result.reason));

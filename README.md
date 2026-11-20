@@ -70,9 +70,7 @@ LICENSE                          MIT 许可证
 2. D/R 雷达候选有效时：
    - D/R 雷达方向确认关闭，踩刹车立即执行；
    - 开启时，踩刹车记录方向盘基准角，任一方向相对变化达到 `obstacleDeg` 后立即执行。
-3. 无原车配对和雷达候选时，进入手动 D/R 方向盘逻辑：
-   - **绝对角度达标开启 (`drAbsoluteSteering=true`)**：直接检测方向盘绝对角度达标（左打挂 R，右打挂 D，默认阈值 30°），无需等待踩刹车记录基准角度；
-   - **绝对角度达标关闭 (`drAbsoluteSteering=false`)**：回退至旧版相对角度逻辑，踩刹车记录基准角，任一方向相对变化达到 `drDeg` 后切相反挡。
+3. 无原车配对和雷达候选时，进入手动 D/R 方向盘逻辑：踩刹车记录基准角，任一方向相对变化达到 `drDeg` 后切相反挡。
 4. P 档手动方向盘：2021/2022 款 Model Y 与 2025 款 Model Y Juniper 均已标定为左打（负角）请求 D，右打（正角）请求 R。其它未标定车型拒绝 P 手动换挡。
 
 ### V12 雷达规则
@@ -212,9 +210,7 @@ LICENSE                          MIT license
 2. For a valid D/R radar candidate:
    - D/R radar steering confirmation off: execute immediately on the brake edge;
    - on: capture a steering baseline on the edge and execute after relative motion reaches `obstacleDeg`.
-3. With no vehicle-pair or radar candidate, manual D/R steering:
-   - **Absolute steering enabled (`drAbsoluteSteering=true`)**: directly evaluates wheel absolute angle (left for R, right for D, default threshold 30°), without waiting to capture baseline on brake edge;
-   - **Absolute steering disabled (`drAbsoluteSteering=false`)**: falls back to legacy relative mode, capturing baseline on brake press edge and switching to opposite gear after relative motion reaches `drDeg`.
+3. With no vehicle-pair or radar candidate, manual D/R steering captures a baseline on the brake edge and switches to the opposite gear after relative motion reaches `drDeg`.
 4. P manual steering: both 2021/2022 Model Y and 2025 Model Y Juniper map negative relative motion to left (left requests D, right requests R). Other uncalibrated models reject P manual steering.
 
 ### V12 radar rules

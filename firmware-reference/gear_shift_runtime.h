@@ -184,7 +184,6 @@ static inline gearshift::Decision gearShiftDecisionSnapshot(
   liveCfg.maxSpeedKph=cfg.maxSpeedKph; liveCfg.hardCutSpeedKph=cfg.hardCutSpeedKph;
   liveCfg.cooldownMs=cfg.cooldownMs; liveCfg.pConfirmDeg=cfg.parkConfirmDeg;
   liveCfg.drConfirmDeg=cfg.driveReverseConfirmDeg; liveCfg.obstacleDeg=cfg.obstacleConfirmDeg;
-  liveCfg.drAbsoluteSteering=cfg.drAbsoluteSteering; liveCfg.drAbsoluteConfirmDeg=cfg.drAbsoluteConfirmDeg;
   liveCfg.obstacleThresholdCm=cfg.obstacleThresholdCm;
   liveCfg.parkSideThresholdCm=cfg.parkSideThresholdCm; liveCfg.parkRearDeltaCm=cfg.parkRearDeltaCm;
   const bool juniperProfile=activeVehicleProfile==VEHICLE_MODEL_Y_JUNIPER;
@@ -324,7 +323,6 @@ static inline void gearShiftServiceTick() {
     liveCfg.maxSpeedKph=cfg.maxSpeedKph; liveCfg.hardCutSpeedKph=cfg.hardCutSpeedKph;
     liveCfg.cooldownMs=cfg.cooldownMs; liveCfg.pConfirmDeg=cfg.parkConfirmDeg;
     liveCfg.drConfirmDeg=cfg.driveReverseConfirmDeg; liveCfg.obstacleDeg=cfg.obstacleConfirmDeg;
-  liveCfg.drAbsoluteSteering=cfg.drAbsoluteSteering; liveCfg.drAbsoluteConfirmDeg=cfg.drAbsoluteConfirmDeg;
     liveCfg.obstacleThresholdCm=cfg.obstacleThresholdCm;
   liveCfg.parkSideThresholdCm=cfg.parkSideThresholdCm; liveCfg.parkRearDeltaCm=cfg.parkRearDeltaCm;
     auto radar=gearShiftRadarSteeringTracker.update(liveInputs,now,liveCfg,
@@ -358,7 +356,6 @@ static inline void gearShiftServiceTick() {
       liveCfg.maxSpeedKph=cfg.maxSpeedKph; liveCfg.hardCutSpeedKph=cfg.hardCutSpeedKph;
       liveCfg.cooldownMs=cfg.cooldownMs; liveCfg.pConfirmDeg=cfg.parkConfirmDeg;
       liveCfg.drConfirmDeg=cfg.driveReverseConfirmDeg; liveCfg.obstacleDeg=cfg.obstacleConfirmDeg;
-  liveCfg.drAbsoluteSteering=cfg.drAbsoluteSteering; liveCfg.drAbsoluteConfirmDeg=cfg.drAbsoluteConfirmDeg;
       liveCfg.obstacleThresholdCm=cfg.obstacleThresholdCm;
   liveCfg.parkSideThresholdCm=cfg.parkSideThresholdCm; liveCfg.parkRearDeltaCm=cfg.parkRearDeltaCm;
       auto manual=gearShiftBrakeSteeringTracker.update(liveInputs,now,liveCfg,
