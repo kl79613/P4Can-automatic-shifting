@@ -1,4 +1,4 @@
-#include "../src/gear_shift_pure.h"
+#include "gear_shift_pure.h"
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -30,6 +30,11 @@ int main() {
   unsigned checks=0;
   Template v13; fill678(v13,1000); uint8_t d[8]; memcpy(d,v13.data,8);
   assert(editGear678(d,7,Target::Reverse)); assert(d[1]==0x24); assert(d[0]==sum8(d+1,6,0x7E)); ++checks;
+  {Config c=active229(); c.protocol=Protocol::V13V14; SafetyInputs in=safe();
+    ExecutionEngine encoder; TemplateObserver templates; fill678(templates.v13V14,1000);
+    Decision decision{true,Target::Reverse,"TEST"};
+    auto sent=encoder.service(1000,true,in,c,decision,templates);
+    assert(sent.send && sent.canId==0x678 && encoder.state.lastCanId==0x678); ++checks;}
   memcpy(d,v13.data,8); assert(!editGear678(d,7,Target::None)); ++checks;
 
   Template v12; fill229(v12,1000); memcpy(d,v12.data,8);
@@ -74,6 +79,7 @@ int main() {
 
   in=safe(); auto sent=engine.service(1000,true,in,cfg,decision,templates);
   assert(sent.send && sent.canId==0x229 && sent.dlc==3 && sent.reason==Deny::Ready); ++checks;
+  assert(engine.state.lastCanId==0x229); ++checks;
   auto wait=engine.service(1010,true,in,cfg,decision,templates);
   assert(!wait.send && wait.reason==Deny::WaitConfirm); ++checks;
   in.gear=2; auto done=engine.service(1020,true,in,cfg,decision,templates);
@@ -169,9 +175,16 @@ int main() {
   }
   // All previous persisted record sizes migrate with safe new-field defaults.
   {Config old=active229();old.steeringFallback=true;old.parkSteeringFallback=true;old.hardCutSpeedKph=12;
-    uint8_t bytes[22];serializeConfig(old,bytes);Config loaded;
-    assert(deserializeConfig(bytes,22,loaded)&&loaded.hardCutSpeedKph==12&&loaded.parkSteeringFallback);++checks;
+    old.parkSideThresholdCm=45;old.parkRearDeltaCm=220;old.drAbsoluteConfirmDeg=42;
+    uint8_t bytes[28];serializeConfig(old,bytes);Config loaded;
+    assert(deserializeConfig(bytes,28,loaded)&&loaded.hardCutSpeedKph==12&&loaded.parkSteeringFallback&&loaded.parkSideThresholdCm==45&&loaded.parkRearDeltaCm==220&&loaded.drAbsoluteConfirmDeg==42);++checks;
     assert(loaded.enabled);++checks;
+    uint8_t bytes26[26]={};
+    memcpy(bytes26,bytes,24);bytes26[0]=3;bytes26[24]=0;bytes26[25]=0;
+    assert(deserializeConfig(bytes26,26,loaded)&&loaded.drAbsoluteConfirmDeg==loaded.driveReverseConfirmDeg);++checks;
+    uint8_t bytes22[22]={};
+    memcpy(bytes22,bytes,20);bytes22[0]=2;bytes22[20]=bytes22[21]=0;
+    assert(deserializeConfig(bytes22,22,loaded)&&loaded.parkSideThresholdCm==30&&loaded.parkRearDeltaCm==180);++checks;
     bytes[0]=1;bytes[18]=bytes[19]=0;
     assert(deserializeConfig(bytes,20,loaded)&&loaded.steeringFallback&&loaded.hardCutSpeedKph==10&&!loaded.parkSteeringFallback);++checks;
     assert(!loaded.enabled);++checks;
@@ -180,13 +193,122 @@ int main() {
     bytes[15]=0;
     assert(deserializeConfig(bytes,16,loaded)&&loaded.obstacleThresholdCm==60);++checks;
     for(size_t size=0;size<16;++size){assert(!deserializeConfig(bytes,size,loaded));++checks;}
-    serializeConfig(old,bytes);bytes[18]=7;assert(!deserializeConfig(bytes,22,loaded));++checks;
-    serializeConfig(old,bytes);bytes[19]=2;assert(!deserializeConfig(bytes,22,loaded));++checks;
-    serializeConfig(old,bytes);bytes[5]=3;assert(!deserializeConfig(bytes,22,loaded));++checks;
-    assert(!deserializeConfig(nullptr,22,loaded));++checks;
+    serializeConfig(old,bytes);bytes[18]=7;assert(!deserializeConfig(bytes,28,loaded));++checks;
+    serializeConfig(old,bytes);bytes[19]=2;assert(!deserializeConfig(bytes,28,loaded));++checks;
+    serializeConfig(old,bytes);bytes[24]=2;assert(!deserializeConfig(bytes,28,loaded));++checks;
+    old.drAbsoluteSteering=true;serializeConfig(old,bytes);
+    assert(deserializeConfig(bytes,28,loaded)&&loaded.drAbsoluteSteering);++checks;
+    old.drAbsoluteSteering=false;
+    serializeConfig(old,bytes);bytes[5]=3;assert(!deserializeConfig(bytes,28,loaded));++checks;
+    assert(!deserializeConfig(nullptr,28,loaded));++checks;
     serializeConfig(old,bytes);bytes[0]=1;
-    assert(deserializeConfig(bytes,22,loaded)&&!loaded.enabled&&loaded.parkSteeringFallback);++checks;
+    assert(deserializeConfig(bytes,28,loaded)&&!loaded.enabled&&loaded.parkSteeringFallback);++checks;
     serializeConfig(old,bytes);assert(!deserializeConfig(bytes,20,loaded));++checks;
+  }
+  // Park-gear pulse bursts retry at 20ms intervals with advancing rolling counter and checksum;
+  // Non-park (D->R, R->D) shifts strictly suppress bursts and remain single-shot.
+  {ExecutionEngine parkBurst;TemplateObserver tmpl;in=safe();cfg=active229();fill229(tmpl.v12,9000);
+    auto first=parkBurst.service(9000,true,in,cfg,decision,tmpl);
+    assert(first.send&&parkBurst.state.burstCount==0&&parkBurst.state.sends==1);++checks;
+    const uint8_t c0 = first.data[1] & 15;
+    auto tooSoon=parkBurst.service(9010,true,in,cfg,decision,tmpl);
+    assert(!tooSoon.send&&tooSoon.reason==Deny::WaitConfirm);++checks;
+    auto b1=parkBurst.service(9020,true,in,cfg,decision,tmpl);
+    assert(b1.send&&b1.reason==Deny::Ready&&parkBurst.state.burstCount==1&&parkBurst.state.sends==2);++checks;
+    const uint8_t c1 = b1.data[1] & 15;
+    assert(c1 == ((c0 + 1) & 15));++checks;
+    assert(b1.data[0] == v12Checksum(4, c1));++checks;
+    auto b2=parkBurst.service(9040,true,in,cfg,decision,tmpl);
+    assert(b2.send&&b2.reason==Deny::Ready&&parkBurst.state.burstCount==2&&parkBurst.state.sends==3);++checks;
+    const uint8_t c2 = b2.data[1] & 15;
+    assert(c2 == ((c1 + 1) & 15));++checks;
+    assert(b2.data[0] == v12Checksum(4, c2));++checks;
+    in.gear=static_cast<int>(decision.target);
+    auto confirmed=parkBurst.service(9050,true,in,cfg,decision,tmpl);
+    assert(!confirmed.send&&confirmed.reason==Deny::ConfirmedSameGear&&parkBurst.state.state==ExecutionState::Confirmed);++checks;
+    auto after=parkBurst.service(9060,true,in,cfg,decision,tmpl);
+    assert(!after.send);++checks;
+  }
+  {ExecutionEngine drNoBurst;TemplateObserver tmpl;in=safe();in.gear=4;cfg=active229();fill229(tmpl.v12,9000);
+    Decision drDec{true,Target::Reverse,"DR_STEERING",true};
+    auto first=drNoBurst.service(9000,true,in,cfg,drDec,tmpl);
+    assert(first.send&&drNoBurst.state.fromGear==4);++checks;
+    auto wait50ms=drNoBurst.service(9050,true,in,cfg,drDec,tmpl);
+    assert(!wait50ms.send&&wait50ms.reason==Deny::WaitConfirm);++checks;
+  }
+  {
+    struct TestParkBrakeSync {
+      uint32_t activeEpoch = 0;
+      uint32_t pressStartMs = 0;
+      int initialLamp = -1;
+      bool armed = false;
+      bool fired = false;
+      void reset() {
+        activeEpoch = 0; pressStartMs = 0; initialLamp = -1; armed = false; fired = false;
+      }
+      bool update(bool brakePressed, bool &brakeEdge, uint32_t brakeEpoch,
+                  int brakeLamp, uint32_t now) {
+        if (!brakePressed) {
+          reset();
+          return false;
+        }
+        if (brakeEdge) {
+          activeEpoch = brakeEpoch; pressStartMs = now;
+          initialLamp = brakeLamp; armed = true; fired = false; brakeEdge = false;
+          return false;
+        }
+        if (armed && !fired && brakeEpoch == activeEpoch) {
+          bool trigger = false;
+          if (initialLamp <= 0) {
+            // Normal start: physical brake light was OFF initially. Wait strictly for 0x3E2 light ON!
+            if (brakeLamp == 1) trigger = true;
+          } else {
+            // AutoHold start: physical brake light was ALREADY ON prior to pedal press.
+            // Wait 150ms steady hold for hydraulic pressure to stabilize before firing.
+            if (static_cast<uint32_t>(now - pressStartMs) >= 150) trigger = true;
+          }
+          if (trigger) {
+            fired = true; brakeEdge = true; return true;
+          }
+        }
+        return false;
+      }
+    } sync;
+
+    // Normal start: initial brake lamp is OFF (0).
+    // Micro-switch edge enters ARMED state and suppresses premature firing.
+    bool edge = true; uint32_t epoch = 1;
+    bool triggered = sync.update(true, edge, epoch, 0, 1000);
+    assert(!triggered && !edge && sync.armed && !sync.fired); ++checks;
+    // Micro-switch on, pedal pressed 100ms later, but physical brake light (0x3E2) is still OFF (0): no trigger
+    triggered = sync.update(true, edge, epoch, 0, 1100);
+    assert(!triggered && !edge && !sync.fired); ++checks;
+    // Even after 300ms, if 0x3E2 is still OFF, do NOT trigger prematurely (strict 0x3E2 light ON, no double insurance)
+    triggered = sync.update(true, edge, epoch, 0, 1300);
+    assert(!triggered && !edge && !sync.fired); ++checks;
+    // At 450ms, 0x3E2 physical brake light turns ON (1): fire immediately!
+    triggered = sync.update(true, edge, epoch, 1, 1450);
+    assert(triggered && edge && sync.fired); ++checks;
+    // Subsequent ticks do not re-fire
+    edge = false;
+    triggered = sync.update(true, edge, epoch, 1, 1470);
+    assert(!triggered && !edge); ++checks;
+    // Release brake resets the sync state
+    sync.update(false, edge, epoch, 0, 2000);
+    assert(!sync.armed && !sync.fired); ++checks;
+
+    // AutoHold start: initial brake lamp is ALREADY ON (1) prior to pedal press.
+    // Micro-switch edge arms, waits 150ms steady hold for hydraulic pressure to stabilize before firing.
+    edge = true; epoch = 2;
+    triggered = sync.update(true, edge, epoch, 1, 3000);
+    assert(!triggered && !edge && sync.armed && !sync.fired); ++checks;
+    triggered = sync.update(true, edge, epoch, 1, 3100); // 100ms: not ready
+    assert(!triggered && !edge && !sync.fired); ++checks;
+    triggered = sync.update(true, edge, epoch, 1, 3150); // 150ms: fire!
+    assert(triggered && edge && sync.fired); ++checks;
+    edge = false;
+    sync.update(false, edge, epoch, 0, 4000);
+    assert(!sync.armed && !sync.fired); ++checks;
   }
   printf("PASS: %u gear-shift encoder/template/interlock/one-shot checks; one request per brake press, no D/R loop\n",checks);
 }

@@ -1,4 +1,4 @@
-#include "../src/gear_hint_v12_live_pure.h"
+#include "gear_hint_v12_live_pure.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -28,7 +28,13 @@ struct Fixture {
     if(s==RightDoors){d[0]=right;d[7]=trunk;}
     if(s==Buckle)d[6]=buckle|(occupancy<<2);
     if(s==Front||s==Rear){
-      uint64_t word=uint64_t(tick&3)<<54;const auto *v=s==Front?front:rear;
+      uint64_t word=uint64_t(tick&3)<<54;
+      uint16_t v[6];
+      const auto *src = s==Front?front:rear;
+      for(int i=0;i<6;++i) v[i]=src[i];
+      if (v[0] != 500 && v[1] == 500 && v[2] == 500 && v[3] == 500 && v[4] == 500 && v[5] == 500) {
+        v[2] = v[0];
+      }
       for(int i=0;i<6;++i)word|=uint64_t(v[i])<<(9*i);
       for(int i=0;i<7;++i)d[i]=word>>(8*i);
     } else if(counterValue(s,d)>=0)d[1]=(d[1]&0xf0)|(tick&15);
@@ -130,6 +136,14 @@ int main(){
    auto r=manual.update(f.o.inputs(0,f.now),f.now,c,1,true,true);CHECK(!r.ready);
    f.brake=0xCF;f.wheel=700;f.step();r=manual.update(f.o.inputs(0,f.now),f.now,c,1,false,true);
    CHECK(r.ready&&r.candidate==Candidate::Forward&&r.wheelDeltaDeci==-600);++checks;}
+  // When drAbsoluteSteering is enabled, absolute steering angle >= threshold triggers immediately on the pedal edge.
+  {Fixture f;f.gear=4;f.brake=0xCF;f.front[0]=500;f.rear[0]=500;Config c;c.steeringFallback=true;c.drAbsoluteSteering=true;c.drAbsoluteConfirmDeg=50;
+   BrakeSteeringTracker manual;f.wheel=-400;f.step();
+   auto r=manual.update(f.o.inputs(0,f.now),f.now,c,1,true,true);
+   CHECK(!r.ready);
+   BrakeSteeringTracker manual2;f.wheel=-550;f.step();
+   r=manual2.update(f.o.inputs(0,f.now),f.now,c,1,true,true);
+   CHECK(r.ready&&r.candidate==Candidate::Reverse);++checks;}
   // One pedal epoch consumes one manual trigger. Holding or reversing the wheel
   // cannot create a second request; a new edge takes a new baseline.
   {Fixture f;f.gear=4;f.brake=0xCF;f.front[0]=500;f.rear[0]=500;Config c;c.steeringFallback=true;
@@ -356,6 +370,65 @@ int main(){
     Config c;c.steeringFallback=(mask&1)!=0;c.parkSteeringFallback=(mask&2)!=0;
     c.pConfirmDeg=c.drConfirmDeg=700;c.obstacleDeg=30;
     auto r=prearmReady(f,c);CHECK(r.ready&&r.source==CandidateSource::Radar);++checks;
+  }
+  // User Features: P-gear S1/S6/S7/S12 corner filter and open-space R-bias decision
+  {
+    // Test 1: S1/S6/S7/S12 all > 30cm, middle sensors clear (500cm) -> Corner sensors ignored, defaults to D
+    Fixture f;
+    f.front[0]=45; f.front[5]=50; f.rear[0]=40; f.rear[5]=55;
+    for(int i=1;i<=4;++i){f.front[i]=500; f.rear[i]=500;}
+    f.run();
+    auto r=f.result();
+    CHECK(r.candidate==Candidate::Forward);
+    CHECK(strcmp(r.rule,"P_BOTH_CLEAR_TO_D")==0); ++checks;
+  }
+  {
+    // Test 2: S1 = 20cm (<= 30cm) close obstacle, rear clear -> S1 participates, triggers R
+    Fixture f;
+    f.front[0]=20; f.front[5]=500; f.rear[0]=500; f.rear[5]=500;
+    for(int i=1;i<=4;++i){f.front[i]=500; f.rear[i]=500;}
+    f.run();
+    auto r=f.result();
+    CHECK(r.candidate==Candidate::Reverse);
+    CHECK(strcmp(r.rule,"P_FRONT_CLOSER_TO_R")==0); ++checks;
+  }
+  {
+    // Test 3: Front middle = 150cm, rear all 500cm -> Rear (500) - Front (150) = 350 > 180cm -> Triggers R
+    Fixture f;
+    for(int i=0;i<6;++i){f.front[i]=500; f.rear[i]=500;}
+    f.front[2]=150;
+    f.run();
+    auto r=f.result();
+    CHECK(r.candidate==Candidate::Reverse);
+    CHECK(strcmp(r.rule,"P_REAR_OPEN_TO_R")==0); ++checks;
+  }
+  {
+    // Test 4: Front all 500cm, rear middle = 150cm -> Rear (150) - Front (500) = -350 <= 180cm -> Defaults to D
+    Fixture f;
+    for(int i=0;i<6;++i){f.front[i]=500; f.rear[i]=500;}
+    f.rear[2]=150;
+    f.run();
+    auto r=f.result();
+    CHECK(r.candidate==Candidate::Forward);
+    CHECK(strcmp(r.rule,"P_BOTH_CLEAR_TO_D")==0); ++checks;
+  }
+  {
+    // Test 5: Custom rear delta = 250cm. Front middle = 200cm, Rear = 500cm.
+    // Difference is 300cm > 250cm -> Triggers R.
+    // If difference were 300cm <= 320cm -> Defaults to D.
+    Fixture f;
+    for(int i=0;i<6;++i){f.front[i]=500; f.rear[i]=500;}
+    f.front[2]=200;
+    f.run();
+    Config custom; custom.parkRearDeltaCm=250;
+    const auto in = f.o.inputs(0, f.now);
+    auto p = propose(in, custom);
+    CHECK(p.candidate==Candidate::Reverse);
+    CHECK(strcmp(p.rule,"P_REAR_OPEN_TO_R")==0); ++checks;
+    custom.parkRearDeltaCm=320; // 300 <= 320 -> Defaults to D
+    p = propose(in, custom);
+    CHECK(p.candidate==Candidate::Forward);
+    CHECK(strcmp(p.rule,"P_BOTH_CLEAR_TO_D")==0); ++checks;
   }
   printf("PASS: %u simplified live-rule checks with two-phase prearm, P clear-to-D and hard speed cut: simple D/R/P rules, occupancy chatter immunity, optional seatbelt, configurable speed/cooldown/angle confirmation/obstacle distance threshold/steering fallback, CRC/counter/stale/source/rollover and 200ms stability; no CAN output\n",checks);
 }

@@ -22,10 +22,10 @@
 ## 状态与测试声明
 
 - 当前代码主要由 AI 生成，尚未完成独立第三方安全审查或车辆安全认证。
-- 目前仅在 **2021 款带雷达 Model Y** 上做过实车测试，主要覆盖 V12 前后雷达路径。
-- **焕新 Model Y（Juniper）尚未适配完成**：部分刹车、配对和方向盘逻辑只是实验性实现，不应视为已完成车型适配。
-- **Model 3 尚未适配完成**，也没有完成对应的实车验证。
-- 未列入实测范围的车型一律视为未验证；不要在这些车型上开启实际换挡执行。
+- **已实车测试验证车型**：
+  - **2021 款、2022 款带雷达车型**（Model Y / Model 3 雷达版）：主要覆盖 V12 前后雷达距离路径、方向盘转向换挡与刹车互锁已完成实车测试验证。
+  - **2025 款焕新 Model Y（Juniper 无雷达版）**：主要覆盖 V13/V14 原车配对与定制转向逻辑已完成实车测试验证。
+- **其他车型暂未测试**：未列入实测范围的车型一律视为未验证；严禁在未经实测验证的车型上开启实际换挡执行。
 
 ## 安全边界
 
@@ -36,8 +36,9 @@
 ```text
 src/
   gear_shift_pure.h              执行状态机、安全门禁、配置序列化、0x229/0x678 编码
+  gear_shift_policy_pure.h       Juniper V13/V14 与通用 V12 协议仲裁与策略逻辑
   gear_hint_v12_raw_pure.h       V12 原始帧与信号定义
-  gear_hint_v12_live_pure.h      V12 距离规则、刹车后方向盘状态机、D/R 雷达确认
+  gear_hint_v12_live_pure.h      V12 距离规则、绝对/相对转向状态机、D/R 雷达确认
   gear_hint_display_pure.h       V13/V14 0x255 + 0x12B 配对观察器
 
 firmware-reference/
@@ -51,8 +52,9 @@ firmware-reference/
   text_format_pure.h             字符串依赖
 
 tests/
-  test_gear_shift_control.cpp    编码、刹车互锁、一次刹车一次请求测试
-  test_v12_live_decision.cpp     V12 距离、雷达/手动方向、相对角度测试
+  test_gear_shift_control.cpp    编码、刹车互锁、绝对/相对转向、一次刹车一次请求测试
+  test_v12_live_decision.cpp     V12 距离、雷达/手动方向、绝对角度达标测试
+  test_gear_shift_policy.cpp     Juniper 与通用协议仲裁与档位源策略测试
   test_gear_hint_display.cpp     V13/V14 配对、过期、刹车和计数器测试
 
 tools/run-host-tests.sh          用本机 C++17 编译器运行测试
@@ -68,8 +70,10 @@ LICENSE                          MIT 许可证
 2. D/R 雷达候选有效时：
    - D/R 雷达方向确认关闭，踩刹车立即执行；
    - 开启时，踩刹车记录方向盘基准角，任一方向相对变化达到 `obstacleDeg` 后立即执行。
-3. 无原车配对和雷达候选时，进入手动 D/R 方向盘逻辑：踩刹车记录基准角，任一方向相对变化达到 `drDeg` 后切相反挡。
-4. P 档手动方向盘需要车型左右符号标定。当前 2021 Model Y 按负相对角=左打处理；Model Y Juniper 尚未标定，P 档手动执行拒绝。
+3. 无原车配对和雷达候选时，进入手动 D/R 方向盘逻辑：
+   - **绝对角度达标开启 (`drAbsoluteSteering=true`)**：直接检测方向盘绝对角度达标（左打挂 R，右打挂 D，默认阈值 30°），无需等待踩刹车记录基准角度；
+   - **绝对角度达标关闭 (`drAbsoluteSteering=false`)**：回退至旧版相对角度逻辑，踩刹车记录基准角，任一方向相对变化达到 `drDeg` 后切相反挡。
+4. P 档手动方向盘：2021/2022 款 Model Y 与 2025 款 Model Y Juniper 均已标定为左打（负角）请求 D，右打（正角）请求 R。其它未标定车型拒绝 P 手动换挡。
 
 ### V12 雷达规则
 
@@ -160,10 +164,10 @@ This package was extracted and modified from 06066060606060's P4CAN Universal Un
 ## Status and testing disclosure
 
 - The current code is primarily AI-generated and has not completed independent third-party safety review or vehicle safety certification.
-- Real-vehicle testing has only been performed on a **2021 radar-equipped Model Y**, mainly covering the V12 front/rear parking-sensor path.
-- **Model Y Juniper is not fully adapted yet**: some brake, pairing, and steering logic is experimental and must not be treated as a completed vehicle adaptation.
-- **Model 3 is not fully adapted yet** and has not completed corresponding real-vehicle validation.
-- Vehicles not listed as tested are unverified. Do not enable actual gear-shift execution on unverified vehicles.
+- **Tested vehicles**:
+  - **2021 and 2022 radar-equipped models** (Model Y / Model 3 radar variants): on-vehicle tested for V12 front/rear radar distance rules, steering shift, and brake interlocks.
+  - **2025 Model Y Juniper (radarless refresh)**: on-vehicle tested for V13/V14 vehicle-pair and custom steering logic.
+- **Other models have NOT been tested**: all other vehicles not explicitly listed are unverified; do not enable actual gear-shift execution on unverified vehicles.
 
 ## Safety boundary
 
@@ -174,8 +178,9 @@ This code comes from experimental protocol observation and reverse-engineering. 
 ```text
 src/
   gear_shift_pure.h              Execution state machine, interlocks, config codec, 0x229/0x678 encoder
+  gear_shift_policy_pure.h       Juniper V13/V14 and universal V12 protocol arbitration and policy logic
   gear_hint_v12_raw_pure.h       V12 raw frame and signal definitions
-  gear_hint_v12_live_pure.h      V12 distance rules, brake-first steering state machines, D/R radar confirmation
+  gear_hint_v12_live_pure.h      V12 distance rules, absolute/relative steering state machines, D/R radar confirmation
   gear_hint_display_pure.h       V13/V14 0x255 + 0x12B pairing observer
 
 firmware-reference/
@@ -189,8 +194,9 @@ firmware-reference/
   text_format_pure.h             String dependency
 
 tests/
-  test_gear_shift_control.cpp    Encoding, brake interlock, one-shot checks
-  test_v12_live_decision.cpp     V12 distance, radar/manual steering, relative-angle checks
+  test_gear_shift_control.cpp    Encoding, brake interlock, absolute/relative steering, one-shot checks
+  test_v12_live_decision.cpp     V12 distance, radar/manual steering, absolute-angle confirmation checks
+  test_gear_shift_policy.cpp     Juniper and universal protocol arbitration and gear policy checks
   test_gear_hint_display.cpp     V13/V14 pairing, expiry, brake, counter checks
 
 tools/run-host-tests.sh          Run tests with a local C++17 compiler
@@ -206,8 +212,10 @@ LICENSE                          MIT license
 2. For a valid D/R radar candidate:
    - D/R radar steering confirmation off: execute immediately on the brake edge;
    - on: capture a steering baseline on the edge and execute after relative motion reaches `obstacleDeg`.
-3. With no vehicle-pair or radar candidate, manual D/R steering captures a baseline on the brake edge and switches to the opposite gear after relative motion reaches `drDeg`.
-4. P manual steering requires model-specific left/right sign calibration. The 2021 Model Y maps negative relative motion to left; Model Y Juniper is not calibrated, so P manual execution fails closed.
+3. With no vehicle-pair or radar candidate, manual D/R steering:
+   - **Absolute steering enabled (`drAbsoluteSteering=true`)**: directly evaluates wheel absolute angle (left for R, right for D, default threshold 30°), without waiting to capture baseline on brake edge;
+   - **Absolute steering disabled (`drAbsoluteSteering=false`)**: falls back to legacy relative mode, capturing baseline on brake press edge and switching to opposite gear after relative motion reaches `drDeg`.
+4. P manual steering: both 2021/2022 Model Y and 2025 Model Y Juniper map negative relative motion to left (left requests D, right requests R). Other uncalibrated models reject P manual steering.
 
 ### V12 radar rules
 

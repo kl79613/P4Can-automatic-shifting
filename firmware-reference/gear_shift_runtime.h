@@ -1,5 +1,6 @@
 #pragma once
 #include "gear_shift_pure.h"
+#include "gear_shift_policy_pure.h"
 #include "gear_hint_display_runtime.h"
 #include "p4_can.h"
 
@@ -20,8 +21,25 @@ static gearhintv12live::BrakeSteeringTracker gearShiftBrakeSteeringTracker;
 static gearhintv12live::RadarSteeringTracker gearShiftRadarSteeringTracker;
 static gearhintv12live::PrearmResult gearShiftLastPrearm;
 static uint32_t gearShiftLastPrearmMs = 0;
+static gearhintv12live::Inputs gearShiftLastInputs;
 
-static inline void gearShiftSerializeConfig(const gearshift::Config &c, uint8_t out[22]) {
+struct ParkBrakeLightSync {
+  uint32_t activeEpoch = 0;
+  uint32_t pressStartMs = 0;
+  int initialLamp = -1;
+  bool armed = false;
+  bool fired = false;
+  void reset() {
+    activeEpoch = 0;
+    pressStartMs = 0;
+    initialLamp = -1;
+    armed = false;
+    fired = false;
+  }
+};
+static ParkBrakeLightSync gearShiftParkBrakeSync;
+
+static inline void gearShiftSerializeConfig(const gearshift::Config &c, uint8_t out[28]) {
   gearshift::serializeConfig(c, out);
 }
 static inline bool gearShiftDeserializeConfig(const uint8_t *in, size_t length, gearshift::Config &c) {
@@ -32,21 +50,24 @@ static inline void gearShiftConfigLoad() {
   Preferences prefs;
   const bool opened = prefs.begin("gearshift", true);
   const bool present = opened && prefs.isKey("cfg_v1");
-  uint8_t bytes[22] = {};
+  uint8_t bytes[28] = {};
   const size_t length = opened && present ? prefs.getBytesLength("cfg_v1") : 0;
-  const bool read = present && (length == 16 || length == 18 || length == 20 || length == 22) &&
+  const bool read = present && (length == 16 || length == 18 || length == 20 || length == 22 || length == 26 || length == 28) &&
       prefs.getBytes("cfg_v1", bytes, sizeof(bytes)) == length;
   gearShiftConfigReadOk = opened && (!present || (read && gearShiftDeserializeConfig(bytes, length, loaded)));
   prefs.end();
   if (!gearShiftConfigReadOk) loaded.enabled = false;
   portENTER_CRITICAL(&gearShiftMux);
   gearShiftConfig = loaded;
-  if (!gearShiftConfigReadOk) gearShiftEngine.reset();
+  if (!gearShiftConfigReadOk) {
+    gearShiftEngine.reset();
+    gearShiftParkBrakeSync.reset();
+  }
   portEXIT_CRITICAL(&gearShiftMux);
 }
 static inline bool gearShiftConfigSave(const gearshift::Config &candidate) {
   if (!gearshift::configValid(candidate)) return false;
-  uint8_t bytes[22];
+  uint8_t bytes[28];
   gearShiftSerializeConfig(candidate, bytes);
   Preferences prefs;
   if (!prefs.begin("gearshift", false)) return false;
@@ -58,12 +79,13 @@ static inline bool gearShiftConfigSave(const gearshift::Config &candidate) {
   if (!ok) return false;
   gearShiftConfigReadOk = true;
   portENTER_CRITICAL(&gearShiftMux);
-  uint8_t previous[22];
+  uint8_t previous[28];
   gearShiftSerializeConfig(gearShiftConfig, previous);
   if (memcmp(previous, bytes, sizeof(bytes)) != 0) {
     gearShiftPrearmTracker.reset();
     gearShiftBrakeSteeringTracker.reset();
     gearShiftRadarSteeringTracker.reset();
+    gearShiftParkBrakeSync.reset();
     gearShiftLastPrearm = {};
   }
   gearShiftConfig = candidate;
@@ -87,6 +109,7 @@ static inline gearshift::SafetyInputs gearShiftSafetyFromInputs(
   out.gear = in.gear;
   out.driverBrake = in.driverBrake;
   out.brakeApply = in.brakeApply;
+  out.brakeLamp = in.brakeLamp;
   out.accelerator = in.accelRaw;
   out.speedCentiKph = in.speedCentiKph;
   const auto &speed = in.tracks[gearhintv12live::Speed];
@@ -104,7 +127,7 @@ static inline gearshift::SafetyInputs gearShiftSafetyFromInputs(
   if (!gearhintv12live::freshTrack(in.tracks[gearhintv12live::Gear], now))
     out.gear = out.accelerator = -1;
   if (!gearhintv12live::freshTrack(in.tracks[gearhintv12live::Brake], now))
-    out.driverBrake = out.brakeApply = -1;
+    out.driverBrake = out.brakeApply = out.brakeLamp = -1;
   if (!gearhintv12live::freshTrack(in.tracks[gearhintv12live::LeftDoors], now))
     out.leftFront = out.leftRear = -1;
   if (!gearhintv12live::freshTrack(in.tracks[gearhintv12live::RightDoors], now))
@@ -142,7 +165,9 @@ static inline gearshift::Decision gearShiftDecisionSnapshot(
   // No radar scan or candidate/steering evaluation above the hard limit.
   auto in=live.inputs(speedBus,now,false);
   liveInputs=in;
-  safety=gearShiftSafetyFromInputs(in,now,activeVehicleProfile != VEHICLE_MODEL_Y_JUNIPER);
+  // Adopt Model Y Juniper brake policy across all profiles: driverBrake==2 is the
+  // sole hard interlock, brakeApply is purely diagnostic and does not gate execution.
+  safety=gearShiftSafetyFromInputs(in,now,false);
   const bool speedCut=gearhintv12live::hardSpeedCut(in,now,cfg.hardCutSpeedKph);
   live.setDecisionSpeedCut(speedCut || !safety.speedValid);
   if(speedCut || !profileAvailable || !safety.speedValid) {
@@ -159,11 +184,13 @@ static inline gearshift::Decision gearShiftDecisionSnapshot(
   liveCfg.maxSpeedKph=cfg.maxSpeedKph; liveCfg.hardCutSpeedKph=cfg.hardCutSpeedKph;
   liveCfg.cooldownMs=cfg.cooldownMs; liveCfg.pConfirmDeg=cfg.parkConfirmDeg;
   liveCfg.drConfirmDeg=cfg.driveReverseConfirmDeg; liveCfg.obstacleDeg=cfg.obstacleConfirmDeg;
+  liveCfg.drAbsoluteSteering=cfg.drAbsoluteSteering; liveCfg.drAbsoluteConfirmDeg=cfg.drAbsoluteConfirmDeg;
   liveCfg.obstacleThresholdCm=cfg.obstacleThresholdCm;
-  // The 2021 Model Y field observation maps negative relative motion to left.
-  // Juniper has not been calibrated, so its P selector remains display-only.
-  liveCfg.parkSteeringCalibrated=cfg.protocol==gearshift::Protocol::V12 ||
-      activeVehicleProfile==VEHICLE_MODEL_Y_LEGACY;
+  liveCfg.parkSideThresholdCm=cfg.parkSideThresholdCm; liveCfg.parkRearDeltaCm=cfg.parkRearDeltaCm;
+  const bool juniperProfile=activeVehicleProfile==VEHICLE_MODEL_Y_JUNIPER;
+  const bool vehiclePairOnly=gearShiftVehiclePairOnly(juniperProfile,cfg.protocol);
+  liveCfg.parkSteeringCalibrated=gearShiftParkSteeringCalibrated(
+      juniperProfile,activeVehicleProfile==VEHICLE_MODEL_Y_LEGACY,cfg.protocol);
   liveCfg.parkSteeringLeftIsNegative=true;
   gearhint::HintResult pair;
   if(cfg.protocol!=gearshift::Protocol::V12)
@@ -175,10 +202,10 @@ static inline gearshift::Decision gearShiftDecisionSnapshot(
     visionProposal.reason=gearhintv12live::Reason::CandidateReady;
     visionProposal.rule="V13V14_PAIR";
   }
-  const bool visionSelected=cfg.protocol==gearshift::Protocol::V13V14 ||
+  const bool visionSelected=vehiclePairOnly||
       (cfg.protocol==gearshift::Protocol::Auto&&visionProposal.candidate!=gearhintv12live::Candidate::None&&
        !gearhintv12live::sameGear(visionProposal.candidate,in.gear));
-  if(cfg.protocol==gearshift::Protocol::Auto&&visionSelected) {
+  if(cfg.protocol==gearshift::Protocol::Auto&&visionSelected&&!vehiclePairOnly) {
     auto radar=in.front.valid&&in.rear.valid?gearhintv12live::propose(in,liveCfg):gearhintv12live::Proposal{};
     if(gearhintv12live::sameGear(radar.candidate,in.gear)) radar={};
     if(radar.candidate!=gearhintv12live::Candidate::None&&radar.candidate!=visionProposal.candidate) {
@@ -221,7 +248,10 @@ static inline void gearShiftServiceTick() {
   portENTER_CRITICAL(&gearHintDisplayMux);
   portENTER_CRITICAL(&gearShiftMux);
   cfg = gearShiftConfig;
+  cfg.protocol = gearShiftEffectiveProtocol(
+      activeVehicleProfile == VEHICLE_MODEL_Y_JUNIPER, cfg.protocol);
   templates = gearShiftTemplateObserver;
+  const auto brakeLightCopy = gearShiftBrakeLightObserver;
   profileAvailable = gearShiftProfileAvailable(cfg);
   gearhintv12live::PrearmResult prearm;
   decision = gearShiftDecisionSnapshot(cfg, gearHintPrearmVisionObserver,
@@ -229,24 +259,76 @@ static inline void gearShiftServiceTick() {
       liveInputs, prearm);
   gearShiftLastPrearmMs = now;
   if(prearm.speedCut) nextServiceMs = now + 100;
+  // Use real physical tail brake light from body bus (0x3E2 / 0x3E3 VCLEFT_brakeLightStatus)
+  const bool brakeLightFresh = brakeLightCopy.seen &&
+      static_cast<uint32_t>(now - brakeLightCopy.observedMs) < 1000;
+  safety.brakeLamp = brakeLightFresh ? (brakeLightCopy.status == 1 ? 1 : 0) : -1;
+  liveInputs.brakeLamp = safety.brakeLamp;
   const bool brakePressed = safety.driverBrake == 2;
-  safety.brakeEdge = gearShiftBrakeEpochTracker.update(
+  const bool physicalBrakeEdge = gearShiftBrakeEpochTracker.update(
       brakePressed, safety.driverBrake == 1 || safety.driverBrake == 2);
+  safety.brakeEdge = physicalBrakeEdge;
   safety.brakeEpoch = gearShiftBrakeEpochTracker.epoch();
   safety.brakeEpochValid = gearShiftBrakeEpochTracker.armed(brakePressed);
+
+  // In P-gear (gear == 1), synchronize the CAN shifting trigger strictly with real physical
+  // brake light from body bus (0x3E2 / 0x3E3 VCLEFT_brakeLightStatus).
+  // A micro-switch edge enters ARMED state and suppresses premature firing.
+  // Shifting fires strictly when physical brake light turns ON (0x3E2: 0 -> 1)
+  // or after 150ms steady hold in AutoHold where brake light was already ON prior to pedal press.
+  // Physical steering tracking retains physicalBrakeEdge to capture steering baseline instantly.
+  if (liveInputs.gear == 1) {
+    if (physicalBrakeEdge) {
+      gearShiftParkBrakeSync.activeEpoch = safety.brakeEpoch;
+      gearShiftParkBrakeSync.pressStartMs = now;
+      gearShiftParkBrakeSync.initialLamp = safety.brakeLamp;
+      gearShiftParkBrakeSync.armed = true;
+      gearShiftParkBrakeSync.fired = false;
+      safety.brakeEdge = false;
+    } else if (brakePressed && gearShiftParkBrakeSync.armed &&
+               !gearShiftParkBrakeSync.fired &&
+               safety.brakeEpoch == gearShiftParkBrakeSync.activeEpoch) {
+      bool trigger = false;
+      if (gearShiftParkBrakeSync.initialLamp <= 0) {
+        // Normal start: physical brake light was OFF initially. Wait strictly for 0x3E2 light ON!
+        if (safety.brakeLamp == 1) {
+          trigger = true;
+        }
+      } else {
+        // AutoHold start: physical brake light was ALREADY ON prior to pedal press.
+        // Wait 150ms steady hold for hydraulic pressure to stabilize before firing.
+        if (static_cast<uint32_t>(now - gearShiftParkBrakeSync.pressStartMs) >= 150) {
+          trigger = true;
+        }
+      }
+      if (trigger) {
+        gearShiftParkBrakeSync.fired = true;
+        safety.brakeEdge = true;
+      }
+    }
+  } else {
+    gearShiftParkBrakeSync.reset();
+  }
+  if (!brakePressed) {
+    gearShiftParkBrakeSync.reset();
+  }
   // D/R radar steering confirmation is brake-first. A ready radar candidate
   // on the edge locks radar priority; relative wheel motion then executes.
   bool radarPriority=false;
-  if(cfg.requireSteering&&liveInputs.gear!=1&&!prearm.speedCut&&profileAvailable) {
+  const bool juniperVehiclePair=gearShiftVehiclePairOnly(
+      activeVehicleProfile==VEHICLE_MODEL_Y_JUNIPER,cfg.protocol);
+  if(cfg.requireSteering&&!juniperVehiclePair&&liveInputs.gear!=1&&!prearm.speedCut&&profileAvailable) {
     gearhintv12live::Config liveCfg;
     liveCfg.requireSeatbelt=cfg.requireSeatbelt; liveCfg.requireSteering=cfg.requireSteering;
     liveCfg.steeringFallback=cfg.steeringFallback; liveCfg.parkSteeringFallback=cfg.parkSteeringFallback;
     liveCfg.maxSpeedKph=cfg.maxSpeedKph; liveCfg.hardCutSpeedKph=cfg.hardCutSpeedKph;
     liveCfg.cooldownMs=cfg.cooldownMs; liveCfg.pConfirmDeg=cfg.parkConfirmDeg;
     liveCfg.drConfirmDeg=cfg.driveReverseConfirmDeg; liveCfg.obstacleDeg=cfg.obstacleConfirmDeg;
+  liveCfg.drAbsoluteSteering=cfg.drAbsoluteSteering; liveCfg.drAbsoluteConfirmDeg=cfg.drAbsoluteConfirmDeg;
     liveCfg.obstacleThresholdCm=cfg.obstacleThresholdCm;
+  liveCfg.parkSideThresholdCm=cfg.parkSideThresholdCm; liveCfg.parkRearDeltaCm=cfg.parkRearDeltaCm;
     auto radar=gearShiftRadarSteeringTracker.update(liveInputs,now,liveCfg,
-        safety.brakeEpoch,safety.brakeEdge,safety.brakeEpochValid,
+        safety.brakeEpoch,physicalBrakeEdge,safety.brakeEpochValid,
         prearm.ready&&prearm.source==gearhintv12live::CandidateSource::Radar,
         prearm.candidate);
     if(radar.radarPriority) {
@@ -269,15 +351,18 @@ static inline void gearShiftServiceTick() {
       gearhintv12live::Config liveCfg;
       liveCfg.requireSeatbelt=cfg.requireSeatbelt; liveCfg.requireSteering=cfg.requireSteering;
       liveCfg.steeringFallback=cfg.steeringFallback; liveCfg.parkSteeringFallback=cfg.parkSteeringFallback;
-      liveCfg.parkSteeringCalibrated=cfg.protocol==gearshift::Protocol::V12 ||
-          activeVehicleProfile==VEHICLE_MODEL_Y_LEGACY;
+      liveCfg.parkSteeringCalibrated=gearShiftParkSteeringCalibrated(
+          activeVehicleProfile==VEHICLE_MODEL_Y_JUNIPER,
+          activeVehicleProfile==VEHICLE_MODEL_Y_LEGACY,cfg.protocol);
       liveCfg.parkSteeringLeftIsNegative=true;
       liveCfg.maxSpeedKph=cfg.maxSpeedKph; liveCfg.hardCutSpeedKph=cfg.hardCutSpeedKph;
       liveCfg.cooldownMs=cfg.cooldownMs; liveCfg.pConfirmDeg=cfg.parkConfirmDeg;
       liveCfg.drConfirmDeg=cfg.driveReverseConfirmDeg; liveCfg.obstacleDeg=cfg.obstacleConfirmDeg;
+  liveCfg.drAbsoluteSteering=cfg.drAbsoluteSteering; liveCfg.drAbsoluteConfirmDeg=cfg.drAbsoluteConfirmDeg;
       liveCfg.obstacleThresholdCm=cfg.obstacleThresholdCm;
+  liveCfg.parkSideThresholdCm=cfg.parkSideThresholdCm; liveCfg.parkRearDeltaCm=cfg.parkRearDeltaCm;
       auto manual=gearShiftBrakeSteeringTracker.update(liveInputs,now,liveCfg,
-          safety.brakeEpoch,safety.brakeEdge,safety.brakeEpochValid);
+          safety.brakeEpoch,physicalBrakeEdge,safety.brakeEpochValid);
       prearm=manual;
       if(manual.ready) {
         decision.valid=true;
@@ -296,6 +381,7 @@ static inline void gearShiftServiceTick() {
   if(prearm.speedCut) gearShiftLastDeny = gearshift::Deny::HardSpeedCut;
   gearShiftLastSafety = safety;
   gearShiftLastDecision = decision;
+  gearShiftLastInputs = liveInputs;
   if (gearShiftServiceCount != UINT32_MAX) ++gearShiftServiceCount;
   portEXIT_CRITICAL(&gearShiftMux);
 

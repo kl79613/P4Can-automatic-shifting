@@ -11,7 +11,7 @@ case "$(uname -s)" in
     fi
     ;;
 esac
-for test in test_gear_shift_control test_v12_live_decision test_gear_hint_display; do
+for test in test_gear_shift_control test_v12_live_decision test_gear_shift_policy test_gear_hint_display; do
   echo "==> $test"
   "$CXX" $FLAGS -I"$ROOT/src" "$ROOT/tests/$test.cpp" -o "/tmp/$test"
   "/tmp/$test"

@@ -50,7 +50,7 @@ V13/V14 方向显示旁路观察 CHASSIS 的 `0x118`、`0x145` 以及 PARTY 的 
 
 构建检查包括：主机状态边界、页面脚本语法和 DOM、原逻辑保留检查、实际 P4 ELF 引脚、TinyCrypt 链接、内嵌网页与源码一致、应用容量及 ZIP 完整性。浏览器测试以模拟接口验证 D/R/暂无、过期、断连、模拟标记/到期、开关及来源切换、浏览器保存/刷新/禁止保存、V12 不消费 V13/V14 结果以及手机宽度；不代表实车测试。
 
-输出与工作区工具链同级：新版默认 `output/P4CAN-GearShiftControl-v3-Independent-Waveshare-32MB`，旧板16 MB 为 `output/P4CAN-GearShiftControl-v3-Independent-OldP4-16MB`，每个文件夹旁有同名 ZIP，应用镜像文件名附带 `postv3-app.bin` 或 `prev3-app.bin`。32 MB 配套分区为官方 `large_fat_32MB`（双 0x480000 应用槽），16 MB 为 `app3M_fat9M_16MB`（双 0x300000 应用槽）。压缩包包含源码和验证结果。
+输出与工作区工具链同级，目录、BIN 和 ZIP 文件名都包含源码 `FW_VERSION` 中的版本号；例如 `output/P4CAN-K1de-vX.Y.Z-Waveshare-32MB`。旧板 16 MB 同样带版本号。每个文件夹旁有同名 ZIP，应用镜像文件名附带 `postv3-app.bin` 或 `prev3-app.bin`。32 MB 配套分区为官方 `large_fat_32MB`（双 0x480000 应用槽），16 MB 为 `app3M_fat9M_16MB`（双 0x300000 应用槽）。压缩包包含源码和验证结果。
 
 两个芯片修订版的应用不可混用，也不是整片镜像。刷写前断开车辆 CAN，并确认目标板芯片版本、分区及当前启动槽；不能将应用写到 0 地址，不能据旧设备的地址推定新板地址。本次不打开串口、不刷写设备。
 

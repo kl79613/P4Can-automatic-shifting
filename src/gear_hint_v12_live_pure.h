@@ -6,6 +6,7 @@
 // No swept path, road-wheel conversion, TTC, pressure or hold certification.
 namespace gearhintv12live {
 constexpr uint32_t kFreshMs = 300;
+constexpr uint32_t kParkRadarFreshMs = 600;
 constexpr uint32_t kZeroDwellMs = 500;
 constexpr uint32_t kStableMs = 200;
 enum Signal : uint8_t { Gear, Brake, Front, Rear, Speed, Steering, LeftDoors, RightDoors, Buckle, SignalCount };
@@ -19,6 +20,10 @@ struct Config {
   uint8_t maxSpeedKph=8, hardCutSpeedKph=10;
   uint16_t cooldownMs=200,pConfirmDeg=15,drConfirmDeg=30,obstacleDeg=30;
   uint16_t obstacleThresholdCm=60;
+  uint16_t parkSideThresholdCm=30;
+  uint16_t parkRearDeltaCm=180;
+  bool drAbsoluteSteering=false;
+  uint16_t drAbsoluteConfirmDeg=30;
 };
 constexpr uint16_t kSignalIds[SignalCount] = {0x118,0x145,0x20E,0x22E,0x257,0x129,0x102,0x103,0x3C2};
 inline const char *signalName(uint8_t s) {
@@ -123,7 +128,7 @@ inline bool required(uint8_t signal,int gear,const Config &config) {
 struct Inputs {
   Track tracks[SignalCount];
   Scan front,rear;
-  int gear=-1,driverBrake=-1,brakeApply=-1,accelRaw=-1,speedCentiKph=0,wheelAngleDeci=0;
+  int gear=-1,driverBrake=-1,brakeApply=-1,brakeLamp=-1,accelRaw=-1,speedCentiKph=0,wheelAngleDeci=0;
   int buckle=-1,occupancy=-1,leftFront=-1,leftRear=-1,rightFront=-1,rightRear=-1,trunk=-1;
   uint32_t zeroForMs=0;
 };
@@ -163,8 +168,8 @@ struct PrearmResult {
   uint32_t stableForMs=0, remainingMs=0, brakeEpoch=0;
   const char *rule="NONE";
 };
-inline bool freshTrack(const Track &t,uint32_t now) {
-  return t.seen&&t.valid&&t.frame.dlc==8&&now-t.frame.observedMs<kFreshMs;
+inline bool freshTrack(const Track &t,uint32_t now,uint32_t freshMs=kFreshMs) {
+  return t.seen&&t.valid&&t.frame.dlc==8&&now-t.frame.observedMs<freshMs;
 }
 inline bool hardSpeedCut(const Inputs &in,uint32_t now,uint8_t limitKph) {
   const auto &t=in.tracks[Speed];
@@ -209,7 +214,8 @@ class PrearmTracker {
     PrearmResult out; out.wheelAngleDeci=in.wheelAngleDeci;
     if(c.maxSpeedKph>8||c.hardCutSpeedKph<1||c.hardCutSpeedKph>30||c.hardCutSpeedKph<c.maxSpeedKph||
        c.cooldownMs>10000||c.pConfirmDeg<1||c.pConfirmDeg>720||c.drConfirmDeg<1||c.drConfirmDeg>720||
-       c.obstacleDeg<1||c.obstacleDeg>720||c.obstacleThresholdCm<1||c.obstacleThresholdCm>499) {
+       c.obstacleDeg<1||c.obstacleDeg>720||c.obstacleThresholdCm<1||c.obstacleThresholdCm>499||
+       c.parkSideThresholdCm<10||c.parkSideThresholdCm>200||c.parkRearDeltaCm<50||c.parkRearDeltaCm>450) {
       out.reason=Reason::ConfigInvalid; return out;
     }
     // This cheap check precedes brake, radar and steering decision work.
@@ -219,12 +225,13 @@ class PrearmTracker {
     out.remainingMs=kFreshMs;
     const auto require=[&](uint8_t signal) {
       const auto &t=in.tracks[signal];
-      if(!freshTrack(t,now)) {
+      const uint32_t signalFreshMs=(in.gear==1&&(signal==Front||signal==Rear))?kParkRadarFreshMs:kFreshMs;
+      if(!freshTrack(t,now,signalFreshMs)) {
         out.reason=!t.seen?Reason::Missing:!t.valid?t.invalidReason:
             t.frame.dlc!=8?Reason::Length:Reason::Stale;
         out.blockedSignal=signal; out.remainingMs=0; return false;
       }
-      const uint32_t remaining=kFreshMs-(now-t.frame.observedMs);
+      const uint32_t remaining=signalFreshMs-(now-t.frame.observedMs);
       if(remaining<out.remainingMs) out.remainingMs=remaining;
       return true;
     };
@@ -262,8 +269,9 @@ class PrearmTracker {
       for(uint8_t signal:radarSignals) {
         if((signal==Front&&in.gear==2)||(signal==Rear&&in.gear==4)) continue;
         const auto &scan=signal==Front?in.front:in.rear;
+        const uint32_t signalFreshMs=(in.gear==1)?kParkRadarFreshMs:kFreshMs;
         if(!require(signal)||!scan.valid) {
-          if(!scan.valid&&freshTrack(in.tracks[signal],now)) out.reason=scan.reason;
+          if(!scan.valid&&freshTrack(in.tracks[signal],now,signalFreshMs)) out.reason=scan.reason;
           out.blockedSignal=signal;radarReady=false;break;
         }
       }
@@ -300,7 +308,8 @@ class BrakeSteeringTracker {
     if(c.maxSpeedKph>8||c.hardCutSpeedKph<1||c.hardCutSpeedKph>30||
        c.hardCutSpeedKph<c.maxSpeedKph||c.cooldownMs>10000||c.pConfirmDeg<1||
        c.pConfirmDeg>720||c.drConfirmDeg<1||c.drConfirmDeg>720||c.obstacleDeg<1||
-       c.obstacleDeg>720||c.obstacleThresholdCm<1||c.obstacleThresholdCm>499) {
+       c.obstacleDeg>720||c.obstacleThresholdCm<1||c.obstacleThresholdCm>499||
+       c.parkSideThresholdCm<10||c.parkSideThresholdCm>200||c.parkRearDeltaCm<50||c.parkRearDeltaCm>450) {
       reset(); out.reason=Reason::ConfigInvalid; return out;
     }
     if(hardSpeedCut(in,now,c.hardCutSpeedKph)) {
@@ -343,7 +352,11 @@ class BrakeSteeringTracker {
     if(!baselineValid_) {
       baselineValid_=true; baseline_=in.wheelAngleDeci; since_=now;
       out.baselineWheelDeci=baseline_; out.wheelDeltaDeci=0;
-      out.reason=Reason::WaitWheel; return out;
+      const int absWheelInit=in.wheelAngleDeci<0?-in.wheelAngleDeci:in.wheelAngleDeci;
+      const int absThresholdInit=10*int(in.gear==1?c.pConfirmDeg:c.drAbsoluteConfirmDeg);
+      if (!(c.drAbsoluteSteering && in.gear!=1 && absWheelInit>=absThresholdInit)) {
+        out.reason=Reason::WaitWheel; return out;
+      }
     }
     out.baselineWheelDeci=baseline_;
     out.wheelDeltaDeci=in.wheelAngleDeci-baseline_;
@@ -351,15 +364,19 @@ class BrakeSteeringTracker {
     const uint32_t age=now-in.tracks[Steering].frame.observedMs;
     out.remainingMs=age<kFreshMs?kFreshMs-age:0;
     const int magnitude=out.wheelDeltaDeci<0?-out.wheelDeltaDeci:out.wheelDeltaDeci;
+    const int absWheel=in.wheelAngleDeci<0?-in.wheelAngleDeci:in.wheelAngleDeci;
     const int threshold=10*int(in.gear==1?c.pConfirmDeg:c.drConfirmDeg);
-    if(magnitude<threshold) {out.reason=Reason::WaitWheel; return out;}
+    const int absThreshold=10*int(in.gear==1?c.pConfirmDeg:c.drAbsoluteConfirmDeg);
+    const bool allowAbsolute = (in.gear == 1) || c.drAbsoluteSteering;
+    const bool triggered = magnitude >= threshold || (allowAbsolute && absWheel >= absThreshold);
+    if(!triggered) {out.reason=Reason::WaitWheel; return out;}
     if(in.gear==1&&!c.parkSteeringCalibrated) {
       used_=true; out.reason=Reason::SteeringCalibrationRequired; return out;
     }
     used_=true;
     out.ready=true; out.reason=Reason::CandidateReady;
     if(in.gear==1) {
-      const bool left=out.wheelDeltaDeci<0;
+      const bool left = (magnitude >= threshold) ? (out.wheelDeltaDeci < 0) : (in.wheelAngleDeci < 0);
       if(left!=c.parkSteeringLeftIsNegative) {
         out.candidate=Candidate::Reverse; out.rule="P_RIGHT_STEERING_TO_R";
       } else {
@@ -420,12 +437,19 @@ class RadarSteeringTracker {
     if(!baselineValid_) {
       baselineValid_=true; baseline_=in.wheelAngleDeci; since_=now;
       out.baselineWheelDeci=baseline_; out.wheelDeltaDeci=0;
-      out.reason=Reason::WaitWheel; return out;
+      const int absWheelInit=in.wheelAngleDeci<0?-in.wheelAngleDeci:in.wheelAngleDeci;
+      const int thresholdInit=10*int(c.obstacleDeg);
+      if (!(c.drAbsoluteSteering && in.gear!=1 && absWheelInit>=thresholdInit)) {
+        out.reason=Reason::WaitWheel; return out;
+      }
     }
     out.baselineWheelDeci=baseline_;
     out.wheelDeltaDeci=in.wheelAngleDeci-baseline_;
     const int magnitude=out.wheelDeltaDeci<0?-out.wheelDeltaDeci:out.wheelDeltaDeci;
-    if(magnitude<10*int(c.obstacleDeg)) {out.reason=Reason::WaitWheel; return out;}
+    const int absWheel=in.wheelAngleDeci<0?-in.wheelAngleDeci:in.wheelAngleDeci;
+    const int threshold=10*int(c.obstacleDeg);
+    const bool triggered = magnitude >= threshold || (c.drAbsoluteSteering && absWheel >= threshold);
+    if(!triggered) {out.reason=Reason::WaitWheel; return out;}
     used_=true; out.ready=true; out.reason=Reason::CandidateReady;
     out.candidate=candidate_; out.source=CandidateSource::Radar;
     out.rule=in.gear==4?"D_RADAR_RELATIVE_TO_R":"R_RADAR_RELATIVE_TO_D";
@@ -441,7 +465,11 @@ class RadarSteeringTracker {
 
 inline bool validSteering(const Inputs &in,uint32_t now) {
   const auto &t=in.tracks[Steering];const auto &f=t.frame;
-  return t.seen&&t.valid&&now-f.observedMs<kFreshMs&&((f.data[3]>>6)&3)==1&&((f.data[1]>>6)&3)==0;
+  if (!t.seen || !t.valid || now - f.observedMs >= kFreshMs || f.dlc != 8) return false;
+  const uint8_t validity = (f.data[3] >> 6) & 3;
+  const uint8_t status = (f.data[1] >> 6) & 3;
+  if (validity == 3 || status == 3) return false;
+  return true;
 }
 inline Gate gate(const Inputs &in,uint32_t now,const Config &config) {
   for(uint8_t s=0;s<SignalCount;++s) {
@@ -449,7 +477,8 @@ inline Gate gate(const Inputs &in,uint32_t now,const Config &config) {
     const auto &t=in.tracks[s];
     if(!t.seen) return {false,Reason::Missing,s};
     if(!t.valid) return {false,t.invalidReason,s};
-    if(now-t.frame.observedMs>=kFreshMs) return {false,Reason::Stale,s};
+    const uint32_t signalFreshMs=(in.gear==1&&(s==Front||s==Rear))?kParkRadarFreshMs:kFreshMs;
+    if(now-t.frame.observedMs>=signalFreshMs) return {false,Reason::Stale,s};
   }
   if(in.gear!=1&&in.gear!=2&&in.gear!=4) return {false,Reason::GearInvalid,Gear};
   if(in.driverBrake==0||in.driverBrake==3) return {false,Reason::BrakeInvalid,Brake};
@@ -472,6 +501,46 @@ inline Gate gate(const Inputs &in,uint32_t now,const Config &config) {
   if(required(Rear,in.gear,config)&&!in.rear.valid) return {false,in.rear.reason,Rear};
   return {true,Reason::CandidateReady,-1};
 }
+struct ParkScanEvaluation {
+  int minCm = 500;
+  bool near = false;
+  uint8_t measuredCount = 0;
+};
+inline ParkScanEvaluation evaluateParkScan(const Scan &s, uint16_t sideThresholdCm) {
+  ParkScanEvaluation res;
+  if (!s.valid) return res;
+  for (uint8_t i = 0; i < 6; ++i) {
+    const uint16_t v = s.raw[i];
+    if (v == 511 || v == 0) continue; // SNA or blocked
+    if (i == 0 || i == 5) {
+      // Corner side sensors: S1, S6 on front (0x20E); S7, S12 on rear (0x22E)
+      if (v == 1) {
+        res.near = true;
+        continue;
+      }
+      if (v == 500 || v > sideThresholdCm) {
+        // Ignored in P-gear when > sideThresholdCm or returning 500 (no object)
+        continue;
+      }
+      ++res.measuredCount;
+      if (v < res.minCm) res.minCm = v;
+      continue;
+    }
+    // Middle sensors: S2..S5 on front; S8..S11 on rear
+    if (v == 1) {
+      res.near = true;
+      continue;
+    }
+    if (v == 500) {
+      continue;
+    }
+    if (v >= 2 && v <= 499) {
+      ++res.measuredCount;
+      if (v < res.minCm) res.minCm = v;
+    }
+  }
+  return res;
+}
 inline Proposal propose(const Inputs &in,const Config &config) {
   const auto &f=in.front; const auto &b=in.rear;
   if(in.gear==4) {
@@ -486,20 +555,28 @@ inline Proposal propose(const Inputs &in,const Config &config) {
     if(objectDetected(b)) return {Candidate::None,Reason::ObstacleBeyondThreshold,"R_REAR_BEYOND_THRESHOLD"};
     return {Candidate::None,Reason::NoObject,"R_NO_REAR_OBJECT"};
   }
-  const bool fo=objectWithinThreshold(f,config.obstacleThresholdCm),
-             bo=objectWithinThreshold(b,config.obstacleThresholdCm);
-  // Both ends are valid and neither contains a threshold-sized obstacle. This
-  // includes NO_OBJECT and measured-but-far echoes. Keep the same forward bias
-  // as the original parking rule: offer D when both travel directions are open.
-  if(!fo&&!bo) {
+  const ParkScanEvaluation pf = evaluateParkScan(f, config.parkSideThresholdCm);
+  const ParkScanEvaluation pb = evaluateParkScan(b, config.parkSideThresholdCm);
+  const bool fo = pf.near || (pf.measuredCount > 0 && uint16_t(pf.minCm) <= config.obstacleThresholdCm);
+  const bool bo = pb.near || (pb.measuredCount > 0 && uint16_t(pb.minCm) <= config.obstacleThresholdCm);
+
+  // Both ends are clear of threshold obstacles.
+  if(!fo && !bo) {
     if(config.parkSteeringFallback)
       return {Candidate::None,Reason::NoObject,"P_WAIT_STEERING_CHOICE"};
+    // Front and rear are both clear of obstacles within threshold.
+    // Default to D, but if rear is greater than front by more than parkRearDeltaCm (default 180cm), give R!
+    const int frontDist = pf.minCm; // defaults to 500 if no obstacle
+    const int rearDist = pb.minCm;  // defaults to 500 if no obstacle
+    if(rearDist - frontDist > static_cast<int>(config.parkRearDeltaCm)) {
+      return {Candidate::Reverse,Reason::CandidateReady,"P_REAR_OPEN_TO_R"};
+    }
     return {Candidate::Forward,Reason::CandidateReady,"P_BOTH_CLEAR_TO_D"};
   }
-  if(f.near&&b.near) return {Candidate::None,Reason::EqualDistance,"P_BOTH_NEAR"};
-  if(f.near||(!b.near&&fo&&(!bo||f.minCm<b.minCm)))
+  if(pf.near && pb.near) return {Candidate::None,Reason::EqualDistance,"P_BOTH_NEAR"};
+  if(pf.near || (!pb.near && fo && (!bo || pf.minCm < pb.minCm)))
     return {Candidate::Reverse,Reason::CandidateReady,"P_FRONT_CLOSER_TO_R"};
-  if(b.near||(bo&&(!fo||b.minCm<f.minCm)))
+  if(pb.near || (bo && (!fo || pb.minCm < pf.minCm)))
     return {Candidate::Forward,Reason::CandidateReady,"P_REAR_CLOSER_TO_D"};
   return {Candidate::None,Reason::EqualDistance,"P_EQUAL_DISTANCE"};
 }
@@ -548,7 +625,7 @@ struct Observer {
     }
     const auto &g=in.tracks[Gear].frame; const auto &b=in.tracks[Brake].frame;
     in.gear=g.data[2]>>5; in.accelRaw=g.data[4];
-    in.driverBrake=(b.data[3]>>5)&3; in.brakeApply=b.data[3]>>7;
+    in.driverBrake=(b.data[3]>>5)&3; in.brakeApply=b.data[3]>>7; in.brakeLamp=(b.data[2]>>5)&1;
     in.speedCentiKph=int(speedRaw(in.tracks[Speed].frame.data))*8-4000;
     in.wheelAngleDeci=wheelDeciDeg(in.tracks[Steering].frame.data);
     const auto &sw=in.tracks[Buckle].frame;
@@ -559,8 +636,9 @@ struct Observer {
     if(in.tracks[Speed].zeroWindow) in.zeroForMs=now-in.tracks[Speed].zeroSince;
     if(!decodeScans) return in;
     in.front=scan(in.tracks[Front].frame); in.rear=scan(in.tracks[Rear].frame);
-    if(!in.tracks[Front].seen||!in.tracks[Front].valid||now-in.tracks[Front].frame.observedMs>=kFreshMs) in.front.valid=false;
-    if(!in.tracks[Rear].seen||!in.tracks[Rear].valid||now-in.tracks[Rear].frame.observedMs>=kFreshMs) in.rear.valid=false;
+    const uint32_t radarFreshMs=(in.gear==1)?kParkRadarFreshMs:kFreshMs;
+    if(!in.tracks[Front].seen||!in.tracks[Front].valid||now-in.tracks[Front].frame.observedMs>=radarFreshMs) in.front.valid=false;
+    if(!in.tracks[Rear].seen||!in.tracks[Rear].valid||now-in.tracks[Rear].frame.observedMs>=radarFreshMs) in.rear.valid=false;
     return in;
   }
   void updateWindows(uint32_t now) {
@@ -625,7 +703,9 @@ struct Observer {
     if(config.maxSpeedKph>8||config.cooldownMs>10000||config.pConfirmDeg<1||config.pConfirmDeg>720||
         config.drConfirmDeg<1||config.drConfirmDeg>720||config.obstacleDeg<1||config.obstacleDeg>720||
         config.obstacleThresholdCm<1||config.obstacleThresholdCm>499||config.hardCutSpeedKph<1||
-        config.hardCutSpeedKph>30||config.hardCutSpeedKph<config.maxSpeedKph) {
+        config.hardCutSpeedKph>30||config.hardCutSpeedKph<config.maxSpeedKph||
+        config.parkSideThresholdCm<10||config.parkSideThresholdCm>200||
+        config.parkRearDeltaCm<50||config.parkRearDeltaCm>450) {
       out.reason=Reason::ConfigInvalid;return out;
     }
     if(aux>2||!receiverAvailable) {out.reason=Reason::ReceiverUnavailable;return out;}
@@ -663,11 +743,14 @@ struct Observer {
       if(!w.baselineValid||delta<out.confirmationDeci) {out.reason=Reason::WaitWheel;return out;}
     }
     out.candidate=current.candidate;out.reason=Reason::CandidateReady;
-    uint32_t oldest=0;
+    uint32_t remainingMin=kFreshMs;
     for(uint8_t s=0;s<SignalCount;++s) if(required(s,in.gear,config)) {
-      const uint32_t age=now-in.tracks[s].frame.observedMs;if(age>oldest)oldest=age;
+      const uint32_t signalFreshMs=(in.gear==1&&(s==Front||s==Rear))?kParkRadarFreshMs:kFreshMs;
+      const uint32_t age=now-in.tracks[s].frame.observedMs;
+      const uint32_t rem=age<signalFreshMs?signalFreshMs-age:0;
+      if(rem<remainingMin) remainingMin=rem;
     }
-    out.remainingMs=kFreshMs-oldest;return out;
+    out.remainingMs=remainingMin;return out;
   }
 };
 } // namespace gearhintv12live

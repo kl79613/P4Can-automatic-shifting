@@ -13,6 +13,8 @@ constexpr uint32_t kTemplateFreshMs = 300;
 constexpr uint16_t kTemplateMinCount = 5;
 constexpr uint32_t kConfirmTimeoutMs = 1500;
 constexpr uint32_t kRetryCooldownMs = 1500;
+constexpr uint32_t kParkBurstIntervalMs = 20;
+constexpr uint8_t kParkMaxBursts = 50;
 
 enum class Protocol : uint8_t { Auto = 0, V12 = 1, V13V14 = 2 };
 enum class Target : uint8_t { None = 0, Park = 1, Reverse = 2, Drive = 4 };
@@ -46,6 +48,10 @@ struct Config {
   uint16_t obstacleConfirmDeg = 30;
   uint16_t obstacleThresholdCm = 60;
   Protocol protocol = Protocol::Auto;
+  uint16_t parkSideThresholdCm = 30;
+  uint16_t parkRearDeltaCm = 180;
+  bool drAbsoluteSteering = false;
+  uint16_t drAbsoluteConfirmDeg = 30;
 };
 
 inline bool configValid(const Config &c) {
@@ -54,11 +60,14 @@ inline bool configValid(const Config &c) {
       c.parkConfirmDeg >= 1 && c.parkConfirmDeg <= 720 &&
       c.driveReverseConfirmDeg >= 1 && c.driveReverseConfirmDeg <= 720 &&
       c.obstacleConfirmDeg >= 1 && c.obstacleConfirmDeg <= 720 &&
-      c.obstacleThresholdCm >= 1 && c.obstacleThresholdCm <= 499;
+      c.drAbsoluteConfirmDeg >= 1 && c.drAbsoluteConfirmDeg <= 720 &&
+      c.obstacleThresholdCm >= 1 && c.obstacleThresholdCm <= 499 &&
+      c.parkSideThresholdCm >= 10 && c.parkSideThresholdCm <= 200 &&
+      c.parkRearDeltaCm >= 50 && c.parkRearDeltaCm <= 450;
 }
 
-inline void serializeConfig(const Config &c, uint8_t out[22]) {
-  out[0] = 2;
+inline void serializeConfig(const Config &c, uint8_t out[28]) {
+  out[0] = 4;
   out[1] = c.enabled ? 1 : 0;
   out[2] = c.requireSeatbelt ? 1 : 0;
   out[3] = c.requireSteering ? 1 : 0;
@@ -78,24 +87,32 @@ inline void serializeConfig(const Config &c, uint8_t out[22]) {
   out[17] = c.steeringFallback ? 1 : 0;
   out[18] = c.hardCutSpeedKph;
   out[19] = c.parkSteeringFallback ? 1 : 0;
-  out[20] = 0;
-  out[21] = 0;
+  out[20] = c.parkSideThresholdCm & 0xFF;
+  out[21] = c.parkSideThresholdCm >> 8;
+  out[22] = c.parkRearDeltaCm & 0xFF;
+  out[23] = c.parkRearDeltaCm >> 8;
+  out[24] = c.drAbsoluteSteering ? 1 : 0;
+  out[25] = c.drAbsoluteConfirmDeg & 0xFF;
+  out[26] = c.drAbsoluteConfirmDeg >> 8;
+  out[27] = 0;
 }
 inline bool deserializeConfig(const uint8_t *in, size_t length, Config &c) {
-  if (!in || (length != 16 && length != 18 && length != 20 && length != 22)) return false;
-  if ((in[0] != 1 && in[0] != 2) || (in[0] == 2 && length != 22) || in[1] > 1 || in[2] > 1 || in[3] > 1 || in[5] > 2 || in[14] > 2 ||
+  if (!in || (length != 16 && length != 18 && length != 20 && length != 22 && length != 26 && length != 28)) return false;
+  if ((in[0] != 1 && in[0] != 2 && in[0] != 3 && in[0] != 4) ||
+      (in[0] == 2 && length != 22) ||
+      (in[0] == 3 && length != 26) ||
+      (in[0] == 4 && length != 28) ||
+      in[1] > 1 || in[2] > 1 || in[3] > 1 || in[5] > 2 || in[14] > 2 ||
       (length == 16 && in[15] != 0)) return false;
-  // Legacy v1 16-byte records reserved byte 15 as zero. They use the safe
-  // default threshold; new 18-byte records carry a 16-bit threshold.
   const uint16_t threshold = length >= 18 ? (in[15] | (uint16_t(in[16]) << 8)) : 60;
   if (length == 18 && in[17] != 0) return false;
   if (length == 20 && (in[18] != 0 || in[19] != 0)) return false;
   if (length >= 20 && in[17] > 1) return false;
   if (length == 22 && (in[19] > 1 || in[20] != 0 || in[21] != 0)) return false;
+  if (length == 26 && (in[19] > 1 || in[24] > 1 || in[25] != 0)) return false;
+  if (length == 28 && (in[19] > 1 || in[24] > 1 || in[27] != 0)) return false;
   Config next;
-  // v1 used a global angle gate. Migrating its meaning must not silently
-  // retain live execution; preserve parameters and require an explicit re-enable.
-  next.enabled = in[0] == 2 && in[1] != 0;
+  next.enabled = (in[0] == 2 || in[0] == 3 || in[0] == 4) && in[1] != 0;
   next.requireSeatbelt = in[2] != 0;
   next.requireSteering = in[3] != 0;
   next.maxSpeedKph = in[4];
@@ -107,8 +124,12 @@ inline bool deserializeConfig(const uint8_t *in, size_t length, Config &c) {
   next.protocol = static_cast<Protocol>(in[14]);
   next.obstacleThresholdCm = threshold;
   next.steeringFallback = length >= 20 && in[17] != 0;
-  next.hardCutSpeedKph = length == 22 ? in[18] : 10;
-  next.parkSteeringFallback = length == 22 && in[19] != 0;
+  next.hardCutSpeedKph = length >= 22 ? in[18] : 10;
+  next.parkSteeringFallback = length >= 22 && in[19] != 0;
+  next.parkSideThresholdCm = length >= 26 ? (in[20] | (uint16_t(in[21]) << 8)) : 30;
+  next.parkRearDeltaCm = length >= 26 ? (in[22] | (uint16_t(in[23]) << 8)) : 180;
+  next.drAbsoluteSteering = length >= 26 && in[24] != 0;
+  next.drAbsoluteConfirmDeg = length >= 28 ? (in[25] | (uint16_t(in[26]) << 8)) : next.driveReverseConfirmDeg;
   if (!configValid(next)) return false;
   c = next;
   return true;
@@ -193,7 +214,7 @@ inline bool templateReady(const Template &t, uint32_t now) {
 
 struct SafetyInputs {
   int gear = -1;
-  int driverBrake = -1, brakeApply = -1, accelerator = -1;
+  int driverBrake = -1, brakeApply = -1, brakeLamp = -1, accelerator = -1;
   int speedCentiKph = 0;
   bool speedValid = false;
   int leftFront = -1, leftRear = -1, rightFront = -1, rightRear = -1, trunk = -1;
@@ -251,7 +272,10 @@ struct EngineState {
   uint8_t fromGear = 0, target = 0;
   uint32_t sentMs = 0, resultMs = 0, lastAttemptMs = 0, brakeEpoch = 0;
   uint32_t sends = 0, confirmations = 0, failures = 0;
-  uint8_t lastCanId = 0, lastDlc = 0;
+  uint8_t burstCount = 0;
+  uint32_t lastBurstMs = 0;
+  uint16_t lastCanId = 0;
+  uint8_t lastDlc = 0;
   uint8_t lastData[8] = {};
 };
 enum class Deny : uint8_t {
@@ -353,6 +377,23 @@ class ExecutionEngine {
         if (state.failures != UINT32_MAX) ++state.failures;
         return {Deny::ConfirmTimeout};
       }
+      if (state.fromGear == 1 && state.burstCount < kParkMaxBursts &&
+          static_cast<uint32_t>(now - state.lastBurstMs) >= kParkBurstIntervalMs) {
+        state.burstCount++;
+        state.lastBurstMs = now;
+        if (state.sends != UINT32_MAX) ++state.sends;
+        if (state.lastCanId == 0x229 && (state.lastDlc == 3 || state.lastDlc == 8)) {
+          editGear229(state.lastData, state.lastDlc, static_cast<Target>(state.target));
+        } else if (state.lastCanId == 0x678 && state.lastDlc == 7) {
+          editGear678(state.lastData, state.lastDlc, static_cast<Target>(state.target));
+        }
+        Action out;
+        out.send = true; out.reason = Deny::Ready;
+        out.canId = state.lastCanId; out.dlc = state.lastDlc;
+        out.target = static_cast<Target>(state.target);
+        memcpy(out.data, state.lastData, sizeof(out.data));
+        return out;
+      }
       return {Deny::WaitConfirm};
     }
     if (state.state == ExecutionState::Confirmed) {
@@ -413,7 +454,8 @@ class ExecutionEngine {
     state.fromGear = static_cast<uint8_t>(in.gear);
     state.target = static_cast<uint8_t>(decision.target);
     state.sentMs = now; state.lastAttemptMs = now; state.brakeEpoch = in.brakeEpoch;
-    state.lastCanId = static_cast<uint8_t>(id); state.lastDlc = dlc;
+    state.burstCount = 0; state.lastBurstMs = now;
+    state.lastCanId = id; state.lastDlc = dlc;
     memcpy(state.lastData, data, sizeof(state.lastData));
     if (state.sends != UINT32_MAX) ++state.sends;
     return out;

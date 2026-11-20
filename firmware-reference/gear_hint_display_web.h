@@ -12,6 +12,12 @@ static String gearHintDisplayToJson() {
   portENTER_CRITICAL(&gearShiftMux);
   prearm = gearShiftPrearmSnapshot(now);
   shiftCfg = gearShiftConfig;
+  const bool executionEnabled = shiftCfg.enabled;
+  const gearshift::Protocol executionProtocol = gearShiftEffectiveProtocol(
+      activeVehicleProfile == VEHICLE_MODEL_Y_JUNIPER, shiftCfg.protocol);
+  const bool executionTemplateReady = executionProtocol == gearshift::Protocol::V12
+      ? gearshift::templateReady(gearShiftTemplateObserver.v12, now)
+      : gearshift::templateReady(gearShiftTemplateObserver.v13V14, now);
   portEXIT_CRITICAL(&gearShiftMux);
   portEXIT_CRITICAL(&gearHintDisplayMux);
   const bool supported = activeCanAIsBody() && activeCanBIsChassis();
@@ -34,6 +40,11 @@ static String gearHintDisplayToJson() {
   jw.i32("brakeApplyRaw", copy.brake.seen && copy.brake.dlc == 8 ? copy.brake.data[3] >> 7 : -1);
   jw.boolean("protocolVerified", false);
   jw.boolean("profileSupported", supported);
+  jw.boolean("executionEnabled", executionEnabled);
+  jw.string("executionProtocol", gearshift::protocolName(executionProtocol));
+  jw.boolean("executionTemplateReady", executionTemplateReady);
+  jw.boolean("executionReady", executionEnabled && supported &&
+      executionProtocol == gearshift::Protocol::V13V14 && executionTemplateReady);
   jw.string("observationScope", "P_D_R_FIELD_MATCH");
   jw.boolean("nonParkInterpretationExperimental", true);
   jw.string("directionField", "BYTE1_BITS4_6");
@@ -89,6 +100,10 @@ static void httpGearHintDisplayStatus() {
 static void gearHintUsbDebugTick() {
 #if defined(P4CAN_BOARD_X179)
   static bool started = false;
+  static uint32_t lastDebugMs = 0;
+  const uint32_t now = static_cast<uint32_t>(millis());
+  if (started && (uint32_t)(now - lastDebugMs) < 1000U) return;
+  lastDebugMs = now;
   if (!started) {
     Serial0.setTxBufferSize(4096);
     Serial0.begin(115200, SERIAL_8N1, 38, 37);
@@ -232,19 +247,21 @@ static void httpGearHintV12RawStatus() {
 // A GET computes only a display projection. Query options never mutate device
 // settings, RX state, confirmation counters, NVS or any original feature.
 static void httpGearHintV12DecisionStatus() {
-  uint32_t aux=0,belt=1,maxKph=8,hardCut=10,turn=0,steerFallback=0,parkSteer=0,cooldown=1000,pDeg=30,drDeg=60,obstacleDeg=30,obstacleCm=100;
+  uint32_t aux=0,belt=1,maxKph=8,hardCut=10,turn=0,steerFallback=0,parkSteer=0,drAbsolute=0,cooldown=1000,pDeg=30,drDeg=60,drAbsoluteDeg=30,obstacleDeg=30,obstacleCm=100;
   const auto option=[](const char *key,uint32_t &value,uint32_t lo,uint32_t hi) {
     return !server.hasArg(key)||(gearHintV12QueryU32(key,value)&&value>=lo&&value<=hi);
   };
   if(!option("auxBus",aux,0,2)||!option("requireSeatbelt",belt,0,1)||!option("maxKph",maxKph,0,8)||
       !option("hardCutKph",hardCut,1,30)||hardCut<maxKph||!option("turnConfirm",turn,0,1)||!option("steeringFallback",steerFallback,0,1)||!option("parkSteeringFallback",parkSteer,0,1)||
+      !option("drAbsoluteSteering",drAbsolute,0,1)||
       !option("cooldownMs",cooldown,0,10000)||
-      !option("pDeg",pDeg,1,720)||!option("drDeg",drDeg,1,720)||!option("obstacleDeg",obstacleDeg,1,720)||
+      !option("pDeg",pDeg,1,720)||!option("drDeg",drDeg,1,720)||!option("drAbsoluteDeg",drAbsoluteDeg,1,720)||!option("obstacleDeg",obstacleDeg,1,720)||
       !option("obstacleCm",obstacleCm,1,499)) {
     server.send(400,"application/json","{\"ok\":false,\"reason\":\"INVALID_DISPLAY_OPTIONS\"}");return;
   }
   gearhintv12live::Config config;
   config.requireSeatbelt=belt!=0;config.maxSpeedKph=static_cast<uint8_t>(maxKph);config.hardCutSpeedKph=static_cast<uint8_t>(hardCut);config.requireSteering=turn!=0;config.steeringFallback=steerFallback!=0;config.parkSteeringFallback=parkSteer!=0;
+  config.drAbsoluteSteering=drAbsolute!=0;config.drAbsoluteConfirmDeg=drAbsoluteDeg;
   config.cooldownMs=cooldown;config.pConfirmDeg=pDeg;config.drConfirmDeg=drDeg;config.obstacleDeg=obstacleDeg;
   config.obstacleThresholdCm=static_cast<uint16_t>(obstacleCm);
   const bool supported=activeCanAIsBody()&&activeCanBIsChassis();
@@ -264,9 +281,19 @@ static void httpGearHintV12DecisionStatus() {
   result=gearHintV12LiveObserver.result(aux,now,available,config);
   prearm=gearShiftPrearmSnapshot(now);
   const auto &saved=gearShiftConfig;
+  const bool executionEnabled=saved.enabled;
+  const gearshift::Protocol executionProtocol=gearShiftEffectiveProtocol(
+      activeVehicleProfile==VEHICLE_MODEL_Y_JUNIPER,saved.protocol);
+  const bool executionTemplateReady=executionProtocol==gearshift::Protocol::V12
+      ? gearshift::templateReady(gearShiftTemplateObserver.v12,now)
+      : gearshift::templateReady(gearShiftTemplateObserver.v13V14,now);
+  const bool executionReady=executionEnabled&&supported&&
+      executionProtocol==gearshift::Protocol::V12&&executionTemplateReady;
   const bool prearmApplied=(saved.protocol!=gearshift::Protocol::V13V14)&&saved.speedBus==aux&&
       saved.requireSeatbelt==config.requireSeatbelt&&saved.requireSteering==config.requireSteering&&
       saved.steeringFallback==config.steeringFallback&&saved.parkSteeringFallback==config.parkSteeringFallback&&
+      saved.drAbsoluteSteering==config.drAbsoluteSteering&&
+      saved.drAbsoluteConfirmDeg==drAbsoluteDeg&&
       saved.maxSpeedKph==maxKph&&saved.hardCutSpeedKph==hardCut&&saved.cooldownMs==cooldown&&
       saved.parkConfirmDeg==pDeg&&saved.driveReverseConfirmDeg==drDeg&&
       saved.obstacleConfirmDeg==obstacleDeg&&saved.obstacleThresholdCm==obstacleCm;
@@ -280,11 +307,16 @@ static void httpGearHintV12DecisionStatus() {
   j.boolean("sweptPathComputed",false);j.boolean("ttcComputed",false);
   j.boolean("radarHealthVerified",false);j.boolean("brakePressureVerified",false);
   j.boolean("controlPermission",false);j.boolean("profileSupported",supported);
+  j.boolean("executionEnabled",executionEnabled);
+  j.string("executionProtocol",gearshift::protocolName(executionProtocol));
+  j.boolean("executionTemplateReady",executionTemplateReady);
+  j.boolean("executionReady",executionReady);
   j.u32("auxBus",aux);j.u32("bodyStateBus",0);j.boolean("wheelConfirmation",config.requireSteering);
   j.boolean("steeringRequired",config.requireSteering);j.boolean("occupancyRequired",false);
   j.beginObject("config");j.boolean("requireSeatbelt",config.requireSeatbelt);j.u32("maxKph",maxKph);j.u32("hardCutKph",hardCut);
-  j.boolean("turnConfirm",config.requireSteering);j.boolean("steeringFallback",config.steeringFallback);j.boolean("parkSteeringFallback",config.parkSteeringFallback);j.u32("cooldownMs",cooldown);
-  j.u32("pDeg",pDeg);j.u32("drDeg",drDeg);j.u32("obstacleDeg",obstacleDeg);j.u32("obstacleCm",obstacleCm);j.endObject();
+  j.boolean("turnConfirm",config.requireSteering);j.boolean("steeringFallback",config.steeringFallback);j.boolean("parkSteeringFallback",config.parkSteeringFallback);
+  j.boolean("drAbsoluteSteering",config.drAbsoluteSteering);j.u32("cooldownMs",cooldown);
+  j.u32("pDeg",pDeg);j.u32("drDeg",drDeg);j.u32("drAbsoluteDeg",drAbsoluteDeg);j.u32("obstacleDeg",obstacleDeg);j.u32("obstacleCm",obstacleCm);j.endObject();
   j.u32("nowMs",now);j.u32("freshnessMs",gearhintv12live::kFreshMs);
   j.string("candidate",gearhintv12live::candidateName(result.candidate));
   j.string("reason",gearhintv12live::reasonName(result.reason));

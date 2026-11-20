@@ -33,6 +33,7 @@ static String gearShiftStatusToJson() {
   gearshift::SafetyInputs safety;
   gearshift::Decision decision;
   gearhintv12live::PrearmResult prearm;
+  gearhintv12live::Inputs liveInputs;
   gearshift::Deny deny;
   int32_t txResult;
   uint32_t now, txMs, serviceCount;
@@ -41,7 +42,8 @@ static String gearShiftStatusToJson() {
   portENTER_CRITICAL(&gearShiftMux);
   cfg=gearShiftConfig; engine=gearShiftEngine.state;
   templates=gearShiftTemplateObserver; safety=gearShiftLastSafety;
-  decision=gearShiftLastDecision; prearm=gearShiftPrearmSnapshot(static_cast<uint32_t>(millis())); deny=gearShiftLastDeny;
+  decision=gearShiftLastDecision; prearm=gearShiftPrearmSnapshot(static_cast<uint32_t>(millis()));
+  liveInputs=gearShiftLastInputs; deny=gearShiftLastDeny;
   txResult=gearShiftLastTxResult; txMs=gearShiftLastTxMs;
   serviceCount=gearShiftServiceCount; readOk=gearShiftConfigReadOk;
   writeOk=gearShiftConfigWriteOk;
@@ -49,16 +51,19 @@ static String gearShiftStatusToJson() {
   portEXIT_CRITICAL(&gearShiftMux);
   portEXIT_CRITICAL(&gearHintDisplayMux);
 
+  const gearshift::Protocol configuredProtocol = cfg.protocol;
+  cfg.protocol = gearShiftEffectiveProtocol(
+      activeVehicleProfile == VEHICLE_MODEL_Y_JUNIPER, cfg.protocol);
   const bool profileSupported=!vehicleProfileSetupMode && !vehicleProfileNvsError &&
       activeCanAIsBody() && activeCanBIsChassis();
-  String out; out.reserve(2600); JsonWriterArduino j(out);
+  String out; out.reserve(3200); JsonWriterArduino j(out);
   j.boolean("ok",true); j.string("schema","p4can.gear-shift.control.v1");
   j.boolean("executionEnabled",cfg.enabled); j.boolean("displayOnly",!cfg.enabled);
   j.boolean("controlPermission",cfg.enabled && profileSupported);
   j.boolean("profileSupported",profileSupported); j.boolean("brakeRequired",true);
-  j.string("brakeRule", activeProfileIsModelYJuniper()
-      ? "MODEL_Y_JUNIPER_DRIVER_STATE_2" : "DRIVER_STATE_2_AND_APPLY_1");
+  j.string("brakeRule", "DRIVER_STATE_2");
   j.boolean("protocolVerified",false); j.boolean("vehicleBehaviorVerified",false);
+  j.string("configuredProtocol",gearshift::protocolName(configuredProtocol));
   j.string("protocol",gearshift::protocolName(cfg.protocol));
   j.string("source",decision.valid?decision.source:""); j.string("target",gearshift::targetName(decision.target));
   j.string("reason",gearshift::denyName(deny)); j.string("state",gearshift::executionStateName(engine.state));
@@ -68,10 +73,13 @@ static String gearShiftStatusToJson() {
   if(txMs) j.u32("lastTxAgeMs",now-txMs); else j.raw("lastTxAgeMs","null");
   j.beginObject("config");
   j.boolean("requireSeatbelt",cfg.requireSeatbelt); j.boolean("requireSteering",cfg.requireSteering); j.boolean("steeringFallback",cfg.steeringFallback); j.boolean("parkSteeringFallback",cfg.parkSteeringFallback);
+  j.boolean("drAbsoluteSteering",cfg.drAbsoluteSteering);
   j.u32("maxSpeedKph",cfg.maxSpeedKph); j.u32("hardCutSpeedKph",cfg.hardCutSpeedKph); j.u32("speedBus",cfg.speedBus);
   j.u32("cooldownMs",cfg.cooldownMs); j.u32("parkConfirmDeg",cfg.parkConfirmDeg);
-  j.u32("driveReverseConfirmDeg",cfg.driveReverseConfirmDeg); j.u32("obstacleConfirmDeg",cfg.obstacleConfirmDeg);
+  j.u32("driveReverseConfirmDeg",cfg.driveReverseConfirmDeg); j.u32("drAbsoluteConfirmDeg",cfg.drAbsoluteConfirmDeg); j.u32("obstacleConfirmDeg",cfg.obstacleConfirmDeg);
   j.u32("obstacleThresholdCm",cfg.obstacleThresholdCm);
+  j.u32("parkSideThresholdCm",cfg.parkSideThresholdCm);
+  j.u32("parkRearDeltaCm",cfg.parkRearDeltaCm);
   j.endObject();
   j.beginObject("prearm");
   j.boolean("ready",prearm.ready); j.boolean("speedCut",prearm.speedCut);
@@ -96,7 +104,7 @@ static String gearShiftStatusToJson() {
   j.endObject();
   j.beginObject("safety");
   j.i32("gearRaw",safety.gear); j.i32("driverBrakeRaw",safety.driverBrake);
-  j.i32("brakeApplyRaw",safety.brakeApply); j.i32("acceleratorRaw",safety.accelerator);
+  j.i32("brakeApplyRaw",safety.brakeApply); j.i32("brakeLampRaw",safety.brakeLamp); j.i32("acceleratorRaw",safety.accelerator);
   j.i32("speedCentiKph",safety.speedCentiKph); j.boolean("speedValid",safety.speedValid);
   j.u32("brakeEpoch",safety.brakeEpoch); j.boolean("brakeEpochValid",safety.brakeEpochValid);
   j.boolean("brakeEdge",safety.brakeEdge);
@@ -110,6 +118,18 @@ static String gearShiftStatusToJson() {
   if(engine.sentMs) j.u32("sentAgeMs",now-engine.sentMs); else j.raw("sentAgeMs","null");
   j.u32("lastCanId",engine.lastCanId); j.u32("lastDlc",engine.lastDlc);
   j.string("lastData",canFrameHexArduino(engine.lastData,engine.lastDlc)); j.endObject();
+  String frontArray = "[";
+  for(uint8_t i=0;i<6;++i) { if(i) frontArray += ','; frontArray += liveInputs.front.raw[i]; }
+  frontArray += ']';
+  String rearArray = "[";
+  for(uint8_t i=0;i<6;++i) { if(i) rearArray += ','; rearArray += liveInputs.rear.raw[i]; }
+  rearArray += ']';
+  j.beginObject("radar");
+  j.boolean("frontValid",liveInputs.front.valid); j.boolean("rearValid",liveInputs.rear.valid);
+  j.i32("frontMinCm",liveInputs.front.minCm); j.i32("rearMinCm",liveInputs.rear.minCm);
+  j.raw("front", frontArray);
+  j.raw("rear", rearArray);
+  j.endObject();
   j.finish(); return out;
 }
 static void httpGearShiftStatus() {
@@ -133,13 +153,16 @@ static void httpGearShiftConfig() {
     changed=true;
   }
   struct Numeric { const char *name; uint32_t lo,hi; uint32_t *value; };
-  uint32_t speed=next.speedBus,belt=next.requireSeatbelt?1:0,steer=next.requireSteering?1:0,steerFallback=next.steeringFallback?1:0,parkSteer=next.parkSteeringFallback?1:0;
+  uint32_t speed=next.speedBus,belt=next.requireSeatbelt?1:0,steer=next.requireSteering?1:0,steerFallback=next.steeringFallback?1:0,parkSteer=next.parkSteeringFallback?1:0,drAbsolute=next.drAbsoluteSteering?1:0;
+  uint16_t drDegVal = next.driveReverseConfirmDeg;
   uint32_t maxKph=next.maxSpeedKph,hardCut=next.hardCutSpeedKph,cooldown=next.cooldownMs,pDeg=next.parkConfirmDeg,
-      drDeg=next.driveReverseConfirmDeg,obstacle=next.obstacleConfirmDeg,obstacleCm=next.obstacleThresholdCm;
+      drDeg=drDegVal,drAbsoluteDeg=next.drAbsoluteConfirmDeg,obstacle=next.obstacleConfirmDeg,obstacleCm=next.obstacleThresholdCm,
+      parkSide=next.parkSideThresholdCm,parkRear=next.parkRearDeltaCm;
   Numeric fields[]={{"speedBus",0,2,&speed},{"requireSeatbelt",0,1,&belt},
-      {"requireSteering",0,1,&steer},{"steeringFallback",0,1,&steerFallback},{"parkSteeringFallback",0,1,&parkSteer},{"maxKph",0,8,&maxKph},{"hardCutKph",1,30,&hardCut},{"cooldownMs",0,10000,&cooldown},
-      {"pDeg",1,720,&pDeg},{"drDeg",1,720,&drDeg},{"obstacleDeg",1,720,&obstacle},
-      {"obstacleCm",1,499,&obstacleCm}};
+      {"requireSteering",0,1,&steer},{"steeringFallback",0,1,&steerFallback},{"parkSteeringFallback",0,1,&parkSteer},{"drAbsoluteSteering",0,1,&drAbsolute},{"maxKph",0,8,&maxKph},{"hardCutKph",1,30,&hardCut},{"cooldownMs",0,10000,&cooldown},
+      {"pDeg",1,720,&pDeg},{"drDeg",1,720,&drDeg},{"drAbsoluteDeg",1,720,&drAbsoluteDeg},{"drAbsoluteConfirmDeg",1,720,&drAbsoluteDeg},{"obstacleDeg",1,720,&obstacle},
+      {"obstacleCm",1,499,&obstacleCm},{"parkSideThresholdCm",10,200,&parkSide},
+      {"parkRearDeltaCm",50,450,&parkRear}};
   for(auto &field:fields) if(server.hasArg(field.name)) {
     if(!gearShiftU32Arg(field.name,field.lo,field.hi,*field.value)) {
       server.send(400,"application/json",String("{\"ok\":false,\"error\":\"invalid ")+field.name+"\"}");return;
@@ -148,10 +171,13 @@ static void httpGearShiftConfig() {
   if(!changed) {server.send(400,"application/json","{\"ok\":false,\"error\":\"missing settings\"}");return;}
   next.speedBus=static_cast<uint8_t>(speed); next.requireSeatbelt=belt!=0;
   next.requireSteering=steer!=0; next.steeringFallback=steerFallback!=0; next.parkSteeringFallback=parkSteer!=0;
+  next.drAbsoluteSteering=drAbsolute!=0; next.drAbsoluteConfirmDeg=static_cast<uint16_t>(drAbsoluteDeg);
   next.maxSpeedKph=static_cast<uint8_t>(maxKph); next.hardCutSpeedKph=static_cast<uint8_t>(hardCut);
   next.cooldownMs=static_cast<uint16_t>(cooldown); next.parkConfirmDeg=static_cast<uint16_t>(pDeg);
   next.driveReverseConfirmDeg=static_cast<uint16_t>(drDeg); next.obstacleConfirmDeg=static_cast<uint16_t>(obstacle);
   next.obstacleThresholdCm=static_cast<uint16_t>(obstacleCm);
+  next.parkSideThresholdCm=static_cast<uint16_t>(parkSide);
+  next.parkRearDeltaCm=static_cast<uint16_t>(parkRear);
   if(!gearshift::configValid(next)) {server.send(400,"application/json","{\"ok\":false,\"error\":\"invalid configuration\"}");return;}
   const bool profileSupported=!vehicleProfileSetupMode && !vehicleProfileNvsError &&
       activeCanAIsBody() && activeCanBIsChassis();
